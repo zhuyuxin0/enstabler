@@ -19,6 +19,12 @@ contracts/artifacts/
 contracts/cache/
 contracts/node_modules/
 
+# Runtime data
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+
 # OS
 .DS_Store
 Thumbs.db
