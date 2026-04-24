@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable, Optional
 
 import aiosqlite
 
@@ -26,6 +26,23 @@ CREATE TABLE IF NOT EXISTS flows (
 );
 CREATE INDEX IF NOT EXISTS idx_flows_ts ON flows(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_flows_stablecoin ON flows(stablecoin);
+CREATE INDEX IF NOT EXISTS idx_flows_from ON flows(from_addr, ts);
+CREATE INDEX IF NOT EXISTS idx_flows_to ON flows(to_addr, ts);
+
+CREATE TABLE IF NOT EXISTS classifications (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    flow_id           INTEGER NOT NULL UNIQUE REFERENCES flows(id),
+    classification    TEXT NOT NULL,
+    risk_level        INTEGER NOT NULL,
+    features_json     TEXT,
+    published         INTEGER NOT NULL DEFAULT 0,
+    onchain_score_id  INTEGER,
+    onchain_tx_hash   TEXT,
+    ts                INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cls_ts ON classifications(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_cls_classification ON classifications(classification);
+CREATE INDEX IF NOT EXISTS idx_cls_published ON classifications(published);
 """
 
 
@@ -36,10 +53,11 @@ async def init_db() -> None:
         await db.commit()
 
 
-async def insert_flow(flow: Flow) -> bool:
+async def insert_flow(flow: Flow) -> Optional[int]:
+    """Insert a flow. Returns the new row id, or None if duplicate."""
     async with aiosqlite.connect(DB_PATH) as db:
         try:
-            await db.execute(
+            cur = await db.execute(
                 """INSERT INTO flows
                    (source, chain, tx_hash, log_index, block_number, ts,
                     stablecoin, from_addr, to_addr, amount_raw, amount_usd)
@@ -49,17 +67,18 @@ async def insert_flow(flow: Flow) -> bool:
                  flow.from_addr, flow.to_addr, flow.amount_raw, flow.amount_usd),
             )
             await db.commit()
-            return True
+            return cur.lastrowid
         except aiosqlite.IntegrityError:
-            return False  # duplicate on (chain, tx_hash, log_index)
+            return None
 
 
-async def insert_flows(flows: Iterable[Flow]) -> int:
-    inserted = 0
+async def insert_flows(flows: Iterable[Flow]) -> list[int]:
+    """Insert many flows. Returns the list of new row ids (skipping duplicates)."""
+    ids: list[int] = []
     async with aiosqlite.connect(DB_PATH) as db:
         for f in flows:
             try:
-                await db.execute(
+                cur = await db.execute(
                     """INSERT INTO flows
                        (source, chain, tx_hash, log_index, block_number, ts,
                         stablecoin, from_addr, to_addr, amount_raw, amount_usd)
@@ -67,21 +86,45 @@ async def insert_flows(flows: Iterable[Flow]) -> int:
                     (f.source, f.chain, f.tx_hash, f.log_index, f.block_number,
                      f.ts, f.stablecoin, f.from_addr, f.to_addr, f.amount_raw, f.amount_usd),
                 )
-                inserted += 1
+                if cur.lastrowid:
+                    ids.append(cur.lastrowid)
             except aiosqlite.IntegrityError:
                 pass
         await db.commit()
-    return inserted
+    return ids
+
+
+async def get_flow(flow_id: int) -> Optional[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM flows WHERE id = ?", (flow_id,)) as cur:
+            row = await cur.fetchone()
+            return dict(row) if row else None
 
 
 async def latest_flows(limit: int = 50) -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT * FROM flows ORDER BY ts DESC LIMIT ?", (limit,)
+            """SELECT f.*, c.classification, c.risk_level, c.published, c.onchain_tx_hash
+               FROM flows f
+               LEFT JOIN classifications c ON c.flow_id = f.id
+               ORDER BY f.ts DESC LIMIT ?""",
+            (limit,),
         ) as cur:
-            rows = await cur.fetchall()
-            return [dict(r) for r in rows]
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def latest_classified(limit: int = 5) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT f.*, c.classification, c.risk_level, c.published, c.onchain_tx_hash
+               FROM classifications c JOIN flows f ON f.id = c.flow_id
+               ORDER BY c.ts DESC LIMIT ?""",
+            (limit,),
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
 
 
 async def flow_count() -> int:
@@ -89,3 +132,97 @@ async def flow_count() -> int:
         async with db.execute("SELECT COUNT(*) FROM flows") as cur:
             row = await cur.fetchone()
             return row[0] if row else 0
+
+
+async def classification_counts() -> dict[str, int]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT classification, COUNT(*) FROM classifications GROUP BY classification"
+        ) as cur:
+            return {row[0]: row[1] for row in await cur.fetchall()}
+
+
+# ---------- queries used for feature extraction ----------
+
+async def sender_tx_count_since(sender: str, since_ts: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM flows WHERE from_addr = ? AND ts >= ?",
+            (sender, since_ts),
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else 0
+
+
+async def fan_counts(addr: str, since_ts: int) -> tuple[int, int]:
+    """Return (distinct senders INTO addr, distinct receivers OUT OF addr) since since_ts."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(DISTINCT from_addr) FROM flows WHERE to_addr = ? AND ts >= ?",
+            (addr, since_ts),
+        ) as cur:
+            row = await cur.fetchone()
+            fan_in = row[0] if row else 0
+        async with db.execute(
+            "SELECT COUNT(DISTINCT to_addr) FROM flows WHERE from_addr = ? AND ts >= ?",
+            (addr, since_ts),
+        ) as cur:
+            row = await cur.fetchone()
+            fan_out = row[0] if row else 0
+    return fan_in, fan_out
+
+
+async def avg_flow_usd_since(stablecoin: str, since_ts: int) -> float:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT AVG(amount_usd) FROM flows WHERE stablecoin = ? AND ts >= ? AND amount_usd IS NOT NULL",
+            (stablecoin, since_ts),
+        ) as cur:
+            row = await cur.fetchone()
+            return float(row[0]) if row and row[0] is not None else 0.0
+
+
+async def first_seen_ts(addr: str) -> Optional[int]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT MIN(ts) FROM flows WHERE from_addr = ? OR to_addr = ?",
+            (addr, addr),
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row and row[0] is not None else None
+
+
+# ---------- classifications ----------
+
+async def insert_classification(
+    flow_id: int,
+    classification: str,
+    risk_level: int,
+    features_json: str,
+    ts: int,
+) -> Optional[int]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        try:
+            cur = await db.execute(
+                """INSERT INTO classifications
+                   (flow_id, classification, risk_level, features_json, ts)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (flow_id, classification, risk_level, features_json, ts),
+            )
+            await db.commit()
+            return cur.lastrowid
+        except aiosqlite.IntegrityError:
+            return None
+
+
+async def mark_published(
+    classification_id: int, onchain_score_id: int, onchain_tx_hash: str
+) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """UPDATE classifications
+               SET published = 1, onchain_score_id = ?, onchain_tx_hash = ?
+               WHERE id = ?""",
+            (onchain_score_id, onchain_tx_hash, classification_id),
+        )
+        await db.commit()
