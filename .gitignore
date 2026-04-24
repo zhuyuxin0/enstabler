@@ -24,6 +24,7 @@ data/*.db
 data/*.db-journal
 data/*.db-wal
 data/*.db-shm
+data/telegram_subs.json
 
 # OS
 .DS_Store
