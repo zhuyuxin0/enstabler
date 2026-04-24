@@ -50,6 +50,11 @@ async def init_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(SCHEMA)
+        # Idempotent migration: add explanation column if missing
+        async with db.execute("PRAGMA table_info(classifications)") as cur:
+            cols = {row[1] for row in await cur.fetchall()}
+        if "explanation" not in cols:
+            await db.execute("ALTER TABLE classifications ADD COLUMN explanation TEXT")
         await db.commit()
 
 
@@ -106,7 +111,8 @@ async def latest_flows(limit: int = 50) -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            """SELECT f.*, c.classification, c.risk_level, c.published, c.onchain_tx_hash
+            """SELECT f.*, c.classification, c.risk_level, c.published,
+                      c.onchain_tx_hash, c.explanation
                FROM flows f
                LEFT JOIN classifications c ON c.flow_id = f.id
                ORDER BY f.ts DESC LIMIT ?""",
@@ -119,7 +125,8 @@ async def latest_classified(limit: int = 5) -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            """SELECT f.*, c.classification, c.risk_level, c.published, c.onchain_tx_hash
+            """SELECT f.*, c.classification, c.risk_level, c.published,
+                      c.onchain_tx_hash, c.explanation
                FROM classifications c JOIN flows f ON f.id = c.flow_id
                ORDER BY c.ts DESC LIMIT ?""",
             (limit,),
@@ -224,5 +231,14 @@ async def mark_published(
                SET published = 1, onchain_score_id = ?, onchain_tx_hash = ?
                WHERE id = ?""",
             (onchain_score_id, onchain_tx_hash, classification_id),
+        )
+        await db.commit()
+
+
+async def set_explanation(classification_id: int, explanation: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE classifications SET explanation = ? WHERE id = ?",
+            (explanation, classification_id),
         )
         await db.commit()
