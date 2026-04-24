@@ -10,7 +10,7 @@ import logging
 import time
 from typing import Any
 
-from agent import classifier, db, features, telegram_bot
+from agent import classifier, compute, db, features, telegram_bot
 from agent.publisher import PublishArgs, Publisher
 from agent.stablecoins import ETHEREUM
 
@@ -68,14 +68,29 @@ async def process_flow(flow_id: int) -> None:
         flow_id, flow["stablecoin"], amount_usd, cls, risk,
     )
 
-    # Fire-and-forget the two side effects so they don't block ingestion.
+    # Fire-and-forget side effects — don't block ingestion.
     asyncio.create_task(_maybe_publish(cls_id, flow, cls, risk))
+    if risk >= 2:
+        asyncio.create_task(_maybe_explain(cls_id, flow, feats, cls, risk))
     if cls == "suspicious" and amount_usd > SUSPICIOUS_ALERT_USD:
         asyncio.create_task(
             telegram_bot.broadcast_alert(
                 {"classification": cls, "risk_level": risk}, flow
             )
         )
+
+
+async def _maybe_explain(
+    classification_id: int,
+    flow: dict[str, Any],
+    feats: dict[str, Any],
+    cls: str,
+    risk: int,
+) -> None:
+    text = await compute.explain(flow, feats, cls, risk)
+    if text:
+        await db.set_explanation(classification_id, text)
+        log.info("compute: explained cls_id=%s (%d chars)", classification_id, len(text))
 
 
 async def _maybe_publish(
