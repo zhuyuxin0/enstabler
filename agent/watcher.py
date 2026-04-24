@@ -18,6 +18,7 @@ from typing import Any, Optional
 import httpx
 import websockets
 
+from agent import pipeline
 from agent.db import insert_flow, insert_flows
 from agent.models import Flow
 from agent.stablecoins import (
@@ -137,7 +138,9 @@ async def _handle_alchemy_message(raw: str) -> None:
         amount_raw=str(amount_raw),
         amount_usd=raw_to_usd(amount_raw, stablecoin.decimals),
     )
-    await insert_flow(flow)
+    flow_id = await insert_flow(flow)
+    if flow_id:
+        asyncio.create_task(pipeline.process_flow(flow_id))
 
 
 # ---------- Bitquery GraphQL poller ----------
@@ -200,8 +203,10 @@ async def bitquery_task() -> None:
                     else:
                         flows = _bitquery_to_flows(body)
                         if flows:
-                            n = await insert_flows(flows)
-                            log.info("bitquery: %d new flows (saw %d)", n, len(flows))
+                            new_ids = await insert_flows(flows)
+                            log.info("bitquery: %d new flows (saw %d)", len(new_ids), len(flows))
+                            for fid in new_ids:
+                                asyncio.create_task(pipeline.process_flow(fid))
             except asyncio.CancelledError:
                 log.info("bitquery: cancelled")
                 raise
