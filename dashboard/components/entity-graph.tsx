@@ -43,7 +43,13 @@ type EntityRow = {
   count: number;
   inFlows: number;
   outFlows: number;
+  // Volume series across SPARK_BUCKETS time-buckets covering SPARK_WINDOW_S.
+  // Bucket 0 = oldest, last = newest.
+  series: number[];
 };
+
+const SPARK_BUCKETS = 16;
+const SPARK_WINDOW_S = 60 * 60; // 1 hour
 
 type CategoryTotal = {
   category: EntityCategory;
@@ -52,6 +58,71 @@ type CategoryTotal = {
 };
 
 const TOP_N = 12;
+
+function Sparkline({
+  series,
+  colour,
+}: {
+  series: number[];
+  colour: string;
+}) {
+  const n = series.length;
+  const max = Math.max(...series, 1);
+  const width = 80;
+  const height = 18;
+  const stepX = width / Math.max(1, n - 1);
+
+  const points = series.map((v, i) => {
+    const x = i * stepX;
+    const y = height - (v / max) * (height - 2) - 1;
+    return [x, y] as const;
+  });
+
+  // Smooth via mid-point interpolation between consecutive points.
+  const path = points
+    .map(([x, y], i) => {
+      if (i === 0) return `M ${x.toFixed(1)} ${y.toFixed(1)}`;
+      const [px, py] = points[i - 1];
+      const cx = (px + x) / 2;
+      return `Q ${cx.toFixed(1)} ${py.toFixed(1)} ${x.toFixed(1)} ${y.toFixed(1)}`;
+    })
+    .join(" ");
+
+  // Filled area under the curve for visual weight.
+  const area = `${path} L ${width} ${height} L 0 ${height} Z`;
+
+  const total = series.reduce((acc, v) => acc + v, 0);
+
+  return (
+    <svg
+      width={width}
+      height={height}
+      viewBox={`0 0 ${width} ${height}`}
+      style={{ display: "block" }}
+    >
+      {total > 0 ? (
+        <>
+          <path d={area} fill={colour} fillOpacity={0.12} />
+          <path d={path} fill="none" stroke={colour} strokeWidth={1.2} strokeOpacity={0.85} />
+          {points.map(([x, y], i) =>
+            i === points.length - 1 && series[i] > 0 ? (
+              <circle key={i} cx={x} cy={y} r={1.6} fill={colour} />
+            ) : null,
+          )}
+        </>
+      ) : (
+        <line
+          x1={0}
+          y1={height - 1}
+          x2={width}
+          y2={height - 1}
+          stroke="rgba(237,237,237,0.12)"
+          strokeWidth={1}
+        />
+      )}
+    </svg>
+  );
+}
 
 export function EntityGraph() {
   const { data, error } = usePoll<{ flows: Flow[] }>(
@@ -82,6 +153,8 @@ export function EntityGraph() {
       const categoryMap = new Map<EntityCategory, CategoryTotal>();
       let labeledTotal = 0;
       let total = 0;
+      const nowS = Math.floor(Date.now() / 1000);
+      const bucketSize = SPARK_WINDOW_S / SPARK_BUCKETS;
 
       for (const f of flows) {
         const usd = f.amount_usd || 0;
@@ -90,6 +163,18 @@ export function EntityGraph() {
 
         const fromEntry = lookupEntity(labels, f.from_addr);
         const toEntry = lookupEntity(labels, f.to_addr);
+
+        // Map this flow's timestamp to a sparkline bucket index. Anything
+        // older than the spark window is dropped from the series only — it
+        // still contributes to volume/count.
+        const ageS = nowS - f.ts;
+        let bucketIdx = -1;
+        if (ageS < SPARK_WINDOW_S && ageS >= 0) {
+          bucketIdx = Math.min(
+            SPARK_BUCKETS - 1,
+            Math.max(0, SPARK_BUCKETS - 1 - Math.floor(ageS / bucketSize)),
+          );
+        }
 
         const sides: Array<[string, EntityEntry, "out" | "in"]> = [
           [(f.from_addr || "").toLowerCase(), fromEntry, "out"],
@@ -109,6 +194,7 @@ export function EntityGraph() {
               count: 0,
               inFlows: 0,
               outFlows: 0,
+              series: new Array(SPARK_BUCKETS).fill(0),
             });
           }
           const row = entityMap.get(a)!;
@@ -116,6 +202,7 @@ export function EntityGraph() {
           row.count += 1;
           if (dir === "out") row.outFlows += 1;
           else row.inFlows += 1;
+          if (bucketIdx >= 0) row.series[bucketIdx] += usd;
         }
 
         if (touched) {
@@ -194,13 +281,14 @@ export function EntityGraph() {
               className="grid border-b border-line bg-foreground/[0.012] font-mono text-[10px] uppercase tracking-[0.18em] text-muted"
               style={{
                 gridTemplateColumns:
-                  "44px minmax(0, 1fr) 80px minmax(0, 1.2fr) 100px 60px",
+                  "44px minmax(0, 1fr) 80px minmax(0, 1.2fr) 92px 100px 60px",
               }}
             >
               <div className="px-4 py-3">#</div>
               <div className="px-4 py-3">Entity</div>
               <div className="px-4 py-3">Category</div>
               <div className="px-4 py-3">Volume</div>
+              <div className="px-4 py-3">1h activity</div>
               <div className="px-4 py-3 text-right">USD</div>
               <div className="px-4 py-3 text-right">Flows</div>
             </div>
@@ -231,7 +319,7 @@ export function EntityGraph() {
                     )}
                     style={{
                       gridTemplateColumns:
-                        "44px minmax(0, 1fr) 80px minmax(0, 1.2fr) 100px 60px",
+                        "44px minmax(0, 1fr) 80px minmax(0, 1.2fr) 92px 100px 60px",
                     }}
                   >
                     <div className="px-4 py-4 font-mono text-xs text-faint tabular-nums">
@@ -266,6 +354,9 @@ export function EntityGraph() {
                         <span>↓ {row.inFlows}</span>
                         <span>↑ {row.outFlows}</span>
                       </div>
+                    </div>
+                    <div className="px-4 py-4">
+                      <Sparkline series={row.series} colour={colour} />
                     </div>
                     <div className="px-4 py-4 font-mono text-sm tabular-nums text-right">
                       {fmtUsd(row.volume)}
