@@ -40,6 +40,9 @@ def last_updated_ts() -> Optional[int]:
 
 async def prices_task() -> None:
     global _last_updated
+    # Lazy import to avoid circular dependency
+    from agent import swap
+
     async with httpx.AsyncClient(timeout=10.0) as client:
         while True:
             try:
@@ -54,6 +57,8 @@ async def prices_task() -> None:
                         if usd is not None:
                             _prices[symbol] = float(usd)
                     _last_updated = int(time.time())
+                    # Cheap check; bails on threshold/cooldown without RPC traffic
+                    asyncio.create_task(swap.maybe_trigger())
                 else:
                     log.debug("coingecko: http %s", resp.status_code)
             except asyncio.CancelledError:

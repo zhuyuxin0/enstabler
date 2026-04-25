@@ -128,6 +128,28 @@ async def broadcast_alert(classification: dict[str, Any], flow: dict[str, Any]) 
         )
 
 
+async def broadcast_swap(
+    token_in: str, token_out: str, amount_usd: float,
+    spread: float, exec_id: str, reason: str,
+) -> None:
+    token = _token()
+    if not token or not _alerts_enabled:
+        return
+    text = (
+        f"🔄 <b>Protective swap fired</b>\n"
+        f"Trigger: {html.escape(reason)} (spread {spread*10_000:.1f}bps)\n"
+        f"Action: <b>${amount_usd:,.0f}</b> {html.escape(token_in)} → {html.escape(token_out)}\n"
+        f"Venue: Uniswap V2 (Ethereum)\n"
+        f"Executor: KeeperHub\n"
+        f"Exec: <code>{html.escape(exec_id)}</code>"
+    )
+    async with httpx.AsyncClient() as client:
+        await asyncio.gather(
+            *[_send(client, chat, text) for chat in _alerts_enabled],
+            return_exceptions=True,
+        )
+
+
 # ---------- command handling ----------
 
 async def _handle_command(client: httpx.AsyncClient, chat_id: str, text: str) -> None:
@@ -142,7 +164,7 @@ async def _handle_command(client: httpx.AsyncClient, chat_id: str, text: str) ->
         _save_subs(_subs)
         await _send(client, chat_id,
             "Enstabler online.\n"
-            "Commands: /status, /latest, /alerts on|off")
+            "Commands: /status, /latest, /swaps, /alerts on|off")
     elif head == "/status":
         total = await db.flow_count()
         counts = await db.classification_counts()
@@ -163,6 +185,22 @@ async def _handle_command(client: httpx.AsyncClient, chat_id: str, text: str) ->
             return
         body = "\n\n".join(_fmt_flow(r) for r in rows)
         await _send(client, chat_id, f"<b>Last 5 classified</b>\n\n{body}")
+    elif head == "/swaps":
+        rows = await db.latest_swaps(5)
+        if not rows:
+            await _send(client, chat_id, "No swaps yet.")
+            return
+        lines = []
+        for r in rows:
+            spread = (r.get("spread") or 0) * 10_000
+            exec_id = (r.get("keeperhub_execution_id") or "?")[:16]
+            err = r.get("error")
+            tail = f"❌ {html.escape(err[:80])}" if err else f"exec=<code>{html.escape(exec_id)}</code>"
+            lines.append(
+                f"<b>{r['token_in_symbol']}→{r['token_out_symbol']}</b> "
+                f"${r['amount_in_usd']:,.0f}  spread={spread:.1f}bps\n  {tail}"
+            )
+        await _send(client, chat_id, "<b>Recent swaps</b>\n\n" + "\n\n".join(lines))
     elif head == "/alerts":
         if len(cmd) < 2 or cmd[1].lower() not in ("on", "off"):
             await _send(client, chat_id, "Usage: /alerts on | /alerts off")
