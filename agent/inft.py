@@ -115,7 +115,7 @@ def _build_identity_blob() -> dict:
             ],
         },
         "entity_labels": labels,
-        "data_sources": ["bitquery", "alchemy_ws", "coingecko"],
+        "data_sources": ["alchemy_ws", "coingecko", "circle_cctp_logs"],
         "supported_stablecoins": ["USDT", "USDC", "DAI", "PYUSD"],
         "execution": {
             "publisher": "FlowRiskOracle on 0G Galileo",

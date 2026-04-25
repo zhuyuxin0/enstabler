@@ -24,7 +24,7 @@ export default function Home() {
               0G Chain · Storage · Compute · ERC-7857 iNFT
             </span>
             <span className="font-mono text-xs text-foreground/70">
-              KeeperHub · Bitquery · Alchemy · Circle CCTP · Coingecko
+              KeeperHub · Alchemy · Circle CCTP · Coingecko
             </span>
           </div>
           <a

@@ -1,10 +1,11 @@
-"""Data ingestion watchers.
+"""Data ingestion watcher.
 
-Two sources, both writing Flow rows into SQLite:
-  - Alchemy WebSocket subscription for ERC-20 Transfer logs on USDT/USDC/DAI/PYUSD
-  - Bitquery GraphQL HTTP poller (free tier; subscriptions require paid plan)
+Single source of live flow data: Alchemy WebSocket subscription to ERC-20
+`Transfer` logs on USDT / USDC / DAI / PYUSD on Ethereum mainnet. Includes
+exponential-backoff reconnect so transient drops don't lose flows.
 
-Both are async tasks spawned from the FastAPI lifespan.
+(We previously also polled Bitquery for backfill, but in practice it added
+~5% volume on a paid quota that didn't justify the operational tax.)
 """
 from __future__ import annotations
 
@@ -13,13 +14,12 @@ import json
 import logging
 import os
 import time
-from typing import Any, Optional
+from typing import Optional
 
-import httpx
 import websockets
 
 from agent import pipeline
-from agent.db import insert_flow, insert_flows
+from agent.db import insert_flow
 from agent.models import Flow
 from agent.stablecoins import (
     BY_ADDRESS,
@@ -30,10 +30,6 @@ from agent.stablecoins import (
 )
 
 log = logging.getLogger("enstabler.watcher")
-
-BITQUERY_URL = "https://streaming.bitquery.io/eap"
-BITQUERY_POLL_SECONDS = 90  # was 30; 90s extends free-tier quota ~3x
-BITQUERY_402_BACKOFF_SECONDS = 900  # 15 min cool-down after a 402
 
 
 def _alchemy_ws_url() -> Optional[str]:
@@ -144,138 +140,3 @@ async def _handle_alchemy_message(raw: str) -> None:
         asyncio.create_task(pipeline.process_flow(flow_id))
 
 
-# ---------- Bitquery GraphQL poller ----------
-
-_BITQUERY_QUERY = """
-query RecentStablecoinTransfers($since: DateTime, $addresses: [String!]) {
-  EVM(network: eth) {
-    Transfers(
-      where: {
-        Block: {Time: {since: $since}}
-        Transfer: {Currency: {SmartContract: {in: $addresses}}}
-      }
-      orderBy: {descending: Block_Time}
-      limit: {count: 200}
-    ) {
-      Block { Number Time }
-      Transaction { Hash }
-      Transfer {
-        Amount
-        AmountInUSD
-        Sender
-        Receiver
-        Currency { SmartContract Symbol Decimals }
-      }
-    }
-  }
-}
-"""
-
-
-async def bitquery_task() -> None:
-    key = os.getenv("BITQUERY_API_KEY")
-    if not key:
-        log.warning("bitquery: BITQUERY_API_KEY not set, skipping")
-        return
-
-    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-    addresses = [s.address for s in ETHEREUM.values()]
-
-    # First poll looks back 2 minutes; subsequent polls look back the poll interval + a little slack.
-    since_seconds_ago = 120
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        while True:
-            try:
-                since_iso = _iso_seconds_ago(since_seconds_ago)
-                resp = await client.post(
-                    BITQUERY_URL,
-                    headers=headers,
-                    json={
-                        "query": _BITQUERY_QUERY,
-                        "variables": {"since": since_iso, "addresses": addresses},
-                    },
-                )
-                if resp.status_code == 402:
-                    # Free-tier quota exhausted — sleep long, then try again.
-                    log.warning(
-                        "bitquery: http 402 quota exceeded; sleeping %ds before next attempt",
-                        BITQUERY_402_BACKOFF_SECONDS,
-                    )
-                    await asyncio.sleep(BITQUERY_402_BACKOFF_SECONDS)
-                    continue
-                if resp.status_code != 200:
-                    log.warning("bitquery: http %s", resp.status_code)
-                else:
-                    body = resp.json()
-                    if "errors" in body:
-                        log.warning("bitquery: %s", body["errors"])
-                    else:
-                        flows = _bitquery_to_flows(body)
-                        if flows:
-                            new_ids = await insert_flows(flows)
-                            log.info("bitquery: %d new flows (saw %d)", len(new_ids), len(flows))
-                            for fid in new_ids:
-                                asyncio.create_task(pipeline.process_flow(fid))
-            except asyncio.CancelledError:
-                log.info("bitquery: cancelled")
-                raise
-            except Exception as e:
-                log.warning("bitquery: poll error: %s", e)
-            since_seconds_ago = BITQUERY_POLL_SECONDS + 10
-            await asyncio.sleep(BITQUERY_POLL_SECONDS)
-
-
-def _iso_seconds_ago(seconds: int) -> str:
-    import datetime
-    dt = datetime.datetime.utcnow() - datetime.timedelta(seconds=seconds)
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _bitquery_to_flows(body: dict[str, Any]) -> list[Flow]:
-    transfers = (
-        body.get("data", {})
-            .get("EVM", {})
-            .get("Transfers") or []
-    )
-    out: list[Flow] = []
-    for t in transfers:
-        try:
-            block = t["Block"]
-            tx = t["Transaction"]
-            tr = t["Transfer"]
-            cur = tr["Currency"]
-            symbol = cur.get("Symbol") or "UNKNOWN"
-            decimals = int(cur.get("Decimals") or 6)
-            amount_human = tr.get("Amount") or "0"
-            amount_raw = int(float(amount_human) * (10 ** decimals))
-            ts = _iso_to_unix(block.get("Time", ""))
-            out.append(Flow(
-                source="bitquery",
-                chain="ethereum",
-                tx_hash=tx.get("Hash", ""),
-                log_index=-1,
-                block_number=int(block.get("Number") or 0),
-                ts=ts,
-                stablecoin=symbol,
-                from_addr=(tr.get("Sender") or "").lower(),
-                to_addr=(tr.get("Receiver") or "").lower(),
-                amount_raw=str(amount_raw),
-                amount_usd=float(tr.get("AmountInUSD") or 0.0) or raw_to_usd(amount_raw, decimals),
-            ))
-        except (KeyError, TypeError, ValueError) as e:
-            log.debug("bitquery: skipping bad row: %s", e)
-    return out
-
-
-def _iso_to_unix(iso: str) -> int:
-    import datetime
-    if not iso:
-        return int(time.time())
-    try:
-        # Bitquery returns "YYYY-MM-DDTHH:MM:SSZ"
-        dt = datetime.datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(
-            tzinfo=datetime.timezone.utc
-        )
-        return int(dt.timestamp())
-    except ValueError:
-        return int(time.time())

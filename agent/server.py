@@ -51,7 +51,6 @@ async def lifespan(app: FastAPI):
 
     _tasks.append(asyncio.create_task(prices.prices_task(), name="prices"))
     _tasks.append(asyncio.create_task(watcher.alchemy_ws_task(), name="alchemy_ws"))
-    _tasks.append(asyncio.create_task(watcher.bitquery_task(), name="bitquery"))
     _tasks.append(asyncio.create_task(cctp.cctp_task(), name="cctp"))
     _tasks.append(asyncio.create_task(telegram_bot.telegram_task(), name="telegram"))
     _tasks.append(asyncio.create_task(storage.storage_task(), name="storage"))
