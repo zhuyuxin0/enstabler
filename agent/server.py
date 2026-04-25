@@ -66,11 +66,9 @@ app = FastAPI(title="Enstabler", version="0.5.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "https://enstabler.xyz",
-    ],
+    # Any localhost port for dev (3000, 3001, 5173, etc.) plus production
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_origins=["https://enstabler.xyz"],
     allow_credentials=False,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
