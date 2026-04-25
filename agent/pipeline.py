@@ -64,8 +64,8 @@ async def process_flow(flow_id: int) -> None:
 
     amount_usd = float(flow.get("amount_usd") or 0.0)
     log.info(
-        "classified flow=%s stable=%s usd=%.2f → %s (risk=%d)",
-        flow_id, flow["stablecoin"], amount_usd, cls, risk,
+        "classified flow=%s src=%s stable=%s usd=%.2f → %s (risk=%d)",
+        flow_id, flow.get("source", "?"), flow["stablecoin"], amount_usd, cls, risk,
     )
 
     # Fire-and-forget side effects — don't block ingestion.

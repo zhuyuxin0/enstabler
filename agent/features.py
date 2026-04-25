@@ -49,13 +49,15 @@ async def extract(flow: dict[str, Any]) -> dict[str, Any]:
         sender_cat in _MINT_BURN_CATEGORIES or receiver_cat in _MINT_BURN_CATEGORIES
     )
 
+    is_cross_chain = (flow.get("source") or "").startswith("cctp_")
+
     return {
         "tx_value_usd": tx_value_usd,
         "entity_class_sender": sender_cat,
         "entity_class_receiver": receiver_cat,
         "tx_frequency_sender": tx_frequency_sender,
         "fan_ratio": fan_ratio,
-        "is_cross_chain": False,
+        "is_cross_chain": is_cross_chain,
         "stablecoin_spread": prices.current_spread(),
         "is_mint_burn": is_mint_burn,
         "value_vs_24h_avg": value_vs_24h_avg,

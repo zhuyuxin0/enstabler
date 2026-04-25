@@ -31,6 +31,7 @@ from typing import Any, Optional
 import websockets
 
 from agent import db
+from agent.models import Flow
 
 log = logging.getLogger("enstabler.cctp")
 
@@ -202,8 +203,9 @@ async def _handle_message(raw: str) -> None:
     amount_usd = decoded["amount_raw"] / (10 ** USDC_DECIMALS)
     dest_chain = domain_name(decoded["destination_domain"])
 
+    ts = int(time.time())
     inserted = await db.insert_cctp_message(
-        ts=int(time.time()),
+        ts=ts,
         source_chain=SOURCE_CHAIN_NAME,
         source_domain=SOURCE_DOMAIN,
         destination_chain=dest_chain,
@@ -218,8 +220,33 @@ async def _handle_message(raw: str) -> None:
         block_number=block_number,
         log_index=log_index,
     )
-    if inserted:
-        log.info(
-            "cctp: %s → %s $%s usdc tx=%s",
-            SOURCE_CHAIN_NAME, dest_chain, f"{amount_usd:,.0f}", tx_hash[:18],
-        )
+    if not inserted:
+        return
+
+    log.info(
+        "cctp: %s → %s $%s usdc tx=%s",
+        SOURCE_CHAIN_NAME, dest_chain, f"{amount_usd:,.0f}", tx_hash[:18],
+    )
+
+    # Fold cross-chain USDC into the same classify-and-publish pipeline that
+    # handles same-chain transfers. This is what gets the CCTP integration
+    # aligned with the 0G prize narrative — cross-chain stablecoin movements
+    # become attestable on 0G Chain, with TEE-verified explanations and
+    # Merkle-rooted snapshots, just like every other flow.
+    flow = Flow(
+        source="cctp_v1",
+        chain=SOURCE_CHAIN_NAME,
+        tx_hash=tx_hash,
+        log_index=log_index,
+        block_number=block_number,
+        ts=ts,
+        stablecoin="USDC",  # CCTP is USDC-only by protocol
+        from_addr=decoded["depositor"],
+        to_addr=decoded["mint_recipient"],  # may be 32-byte (e.g. Solana)
+        amount_raw=str(decoded["amount_raw"]),
+        amount_usd=amount_usd,
+    )
+    flow_id = await db.insert_flow(flow)
+    if flow_id:
+        from agent import pipeline  # local import to avoid module cycle
+        asyncio.create_task(pipeline.process_flow(flow_id))
