@@ -1,6 +1,7 @@
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, AsyncIterator, Iterable, Optional
 
 import aiosqlite
 
@@ -95,9 +96,28 @@ CREATE INDEX IF NOT EXISTS idx_kh_exec_ts ON kh_executions(ts DESC);
 """
 
 
+@asynccontextmanager
+async def _conn() -> AsyncIterator[aiosqlite.Connection]:
+    """Single source of truth for DB connections. Applies the per-connection
+    busy_timeout so concurrent writers wait briefly instead of erroring with
+    'database is locked'. WAL mode is set once globally in init_db()."""
+    db = await aiosqlite.connect(DB_PATH)
+    try:
+        await db.execute("PRAGMA busy_timeout=5000")
+        yield db
+    finally:
+        await db.close()
+
+
 async def init_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
+        # WAL mode: readers + 1 writer concurrently, instead of full-file lock.
+        # Eliminates most "database is locked" bursts when many pipeline tasks
+        # write at once. Persistent: set once, sticks for the lifetime of the DB.
+        await db.execute("PRAGMA journal_mode=WAL")
+        await db.execute("PRAGMA busy_timeout=5000")
+        await db.execute("PRAGMA synchronous=NORMAL")  # safe with WAL, faster
         await db.executescript(SCHEMA)
         # Idempotent migration: add explanation column if missing
         async with db.execute("PRAGMA table_info(classifications)") as cur:
@@ -109,7 +129,7 @@ async def init_db() -> None:
 
 async def insert_flow(flow: Flow) -> Optional[int]:
     """Insert a flow. Returns the new row id, or None if duplicate."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _conn() as db:
         try:
             cur = await db.execute(
                 """INSERT INTO flows
@@ -129,7 +149,7 @@ async def insert_flow(flow: Flow) -> Optional[int]:
 async def insert_flows(flows: Iterable[Flow]) -> list[int]:
     """Insert many flows. Returns the list of new row ids (skipping duplicates)."""
     ids: list[int] = []
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _conn() as db:
         for f in flows:
             try:
                 cur = await db.execute(
@@ -149,7 +169,7 @@ async def insert_flows(flows: Iterable[Flow]) -> list[int]:
 
 
 async def get_flow(flow_id: int) -> Optional[dict]:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _conn() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("SELECT * FROM flows WHERE id = ?", (flow_id,)) as cur:
             row = await cur.fetchone()
@@ -157,7 +177,7 @@ async def get_flow(flow_id: int) -> Optional[dict]:
 
 
 async def latest_flows(limit: int = 50) -> list[dict]:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _conn() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             """SELECT f.*, c.classification, c.risk_level, c.published,
@@ -171,7 +191,7 @@ async def latest_flows(limit: int = 50) -> list[dict]:
 
 
 async def latest_classified(limit: int = 5) -> list[dict]:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _conn() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             """SELECT f.*, c.classification, c.risk_level, c.published,
@@ -184,14 +204,14 @@ async def latest_classified(limit: int = 5) -> list[dict]:
 
 
 async def flow_count() -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _conn() as db:
         async with db.execute("SELECT COUNT(*) FROM flows") as cur:
             row = await cur.fetchone()
             return row[0] if row else 0
 
 
 async def classification_counts() -> dict[str, int]:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _conn() as db:
         async with db.execute(
             "SELECT classification, COUNT(*) FROM classifications GROUP BY classification"
         ) as cur:
@@ -201,7 +221,7 @@ async def classification_counts() -> dict[str, int]:
 # ---------- queries used for feature extraction ----------
 
 async def sender_tx_count_since(sender: str, since_ts: int) -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _conn() as db:
         async with db.execute(
             "SELECT COUNT(*) FROM flows WHERE from_addr = ? AND ts >= ?",
             (sender, since_ts),
@@ -212,7 +232,7 @@ async def sender_tx_count_since(sender: str, since_ts: int) -> int:
 
 async def fan_counts(addr: str, since_ts: int) -> tuple[int, int]:
     """Return (distinct senders INTO addr, distinct receivers OUT OF addr) since since_ts."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _conn() as db:
         async with db.execute(
             "SELECT COUNT(DISTINCT from_addr) FROM flows WHERE to_addr = ? AND ts >= ?",
             (addr, since_ts),
@@ -229,7 +249,7 @@ async def fan_counts(addr: str, since_ts: int) -> tuple[int, int]:
 
 
 async def avg_flow_usd_since(stablecoin: str, since_ts: int) -> float:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _conn() as db:
         async with db.execute(
             "SELECT AVG(amount_usd) FROM flows WHERE stablecoin = ? AND ts >= ? AND amount_usd IS NOT NULL",
             (stablecoin, since_ts),
@@ -239,7 +259,7 @@ async def avg_flow_usd_since(stablecoin: str, since_ts: int) -> float:
 
 
 async def first_seen_ts(addr: str) -> Optional[int]:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _conn() as db:
         async with db.execute(
             "SELECT MIN(ts) FROM flows WHERE from_addr = ? OR to_addr = ?",
             (addr, addr),
@@ -257,7 +277,7 @@ async def insert_classification(
     features_json: str,
     ts: int,
 ) -> Optional[int]:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _conn() as db:
         try:
             cur = await db.execute(
                 """INSERT INTO classifications
@@ -274,7 +294,7 @@ async def insert_classification(
 async def mark_published(
     classification_id: int, onchain_score_id: int, onchain_tx_hash: str
 ) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _conn() as db:
         await db.execute(
             """UPDATE classifications
                SET published = 1, onchain_score_id = ?, onchain_tx_hash = ?
@@ -285,7 +305,7 @@ async def mark_published(
 
 
 async def set_explanation(classification_id: int, explanation: str) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _conn() as db:
         await db.execute(
             "UPDATE classifications SET explanation = ? WHERE id = ?",
             (explanation, classification_id),
@@ -308,7 +328,7 @@ async def insert_swap(
     keeperhub_status: Optional[str],
     error: Optional[str] = None,
 ) -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _conn() as db:
         cur = await db.execute(
             """INSERT INTO swaps
                (ts, trigger_reason, spread, token_in_symbol, token_out_symbol,
@@ -324,7 +344,7 @@ async def insert_swap(
 async def update_swap_status(
     swap_id: int, keeperhub_status: str, tx_hash: Optional[str] = None, error: Optional[str] = None
 ) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _conn() as db:
         await db.execute(
             "UPDATE swaps SET keeperhub_status = ?, tx_hash = COALESCE(?, tx_hash), error = COALESCE(?, error) WHERE id = ?",
             (keeperhub_status, tx_hash, error, swap_id),
@@ -333,7 +353,7 @@ async def update_swap_status(
 
 
 async def latest_swaps(limit: int = 20) -> list[dict]:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _conn() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             "SELECT * FROM swaps ORDER BY ts DESC LIMIT ?", (limit,)
@@ -342,7 +362,7 @@ async def latest_swaps(limit: int = 20) -> list[dict]:
 
 
 async def swap_count() -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _conn() as db:
         async with db.execute("SELECT COUNT(*) FROM swaps") as cur:
             row = await cur.fetchone()
             return row[0] if row else 0
@@ -367,7 +387,7 @@ async def insert_cctp_message(
     block_number: int,
     log_index: int,
 ) -> bool:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _conn() as db:
         try:
             await db.execute(
                 """INSERT INTO cctp_messages
@@ -386,7 +406,7 @@ async def insert_cctp_message(
 
 
 async def latest_cctp_messages(limit: int = 50) -> list[dict]:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _conn() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             "SELECT * FROM cctp_messages ORDER BY ts DESC LIMIT ?", (limit,)
@@ -395,7 +415,7 @@ async def latest_cctp_messages(limit: int = 50) -> list[dict]:
 
 
 async def cctp_count() -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _conn() as db:
         async with db.execute("SELECT COUNT(*) FROM cctp_messages") as cur:
             row = await cur.fetchone()
             return row[0] if row else 0
@@ -411,7 +431,7 @@ async def insert_kh_execution(
     error: Optional[str],
     inputs_json: Optional[str],
 ) -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _conn() as db:
         cur = await db.execute(
             """INSERT INTO kh_executions
                (ts, classification_id, workflow_id, execution_id, status, error, inputs_json)
@@ -423,7 +443,7 @@ async def insert_kh_execution(
 
 
 async def latest_kh_executions(limit: int = 20) -> list[dict]:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _conn() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             "SELECT * FROM kh_executions ORDER BY ts DESC LIMIT ?", (limit,)
@@ -432,7 +452,7 @@ async def latest_kh_executions(limit: int = 20) -> list[dict]:
 
 
 async def kh_execution_count() -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _conn() as db:
         async with db.execute("SELECT COUNT(*) FROM kh_executions") as cur:
             row = await cur.fetchone()
             return row[0] if row else 0
@@ -440,7 +460,7 @@ async def kh_execution_count() -> int:
 
 async def cctp_volume_by_destination() -> list[dict]:
     """Return sum of amount_usd per destination chain, descending by volume."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _conn() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             """SELECT destination_chain, COUNT(*) as count, SUM(amount_usd) as volume_usd

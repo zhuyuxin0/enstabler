@@ -32,7 +32,8 @@ from agent.stablecoins import (
 log = logging.getLogger("enstabler.watcher")
 
 BITQUERY_URL = "https://streaming.bitquery.io/eap"
-BITQUERY_POLL_SECONDS = 30
+BITQUERY_POLL_SECONDS = 90  # was 30; 90s extends free-tier quota ~3x
+BITQUERY_402_BACKOFF_SECONDS = 900  # 15 min cool-down after a 402
 
 
 def _alchemy_ws_url() -> Optional[str]:
@@ -194,6 +195,14 @@ async def bitquery_task() -> None:
                         "variables": {"since": since_iso, "addresses": addresses},
                     },
                 )
+                if resp.status_code == 402:
+                    # Free-tier quota exhausted — sleep long, then try again.
+                    log.warning(
+                        "bitquery: http 402 quota exceeded; sleeping %ds before next attempt",
+                        BITQUERY_402_BACKOFF_SECONDS,
+                    )
+                    await asyncio.sleep(BITQUERY_402_BACKOFF_SECONDS)
+                    continue
                 if resp.status_code != 200:
                     log.warning("bitquery: http %s", resp.status_code)
                 else:
