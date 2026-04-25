@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 
-from agent import pipeline, prices, storage, swap, telegram_bot, watcher
+from agent import inft, pipeline, prices, storage, swap, telegram_bot, watcher
 from agent.db import (
     classification_counts,
     flow_count,
@@ -35,6 +35,9 @@ async def lifespan(app: FastAPI):
     publisher = Publisher()
     if await publisher.setup():
         pipeline.set_publisher(publisher)
+
+    # iNFT bootstrap runs in background — mints once if our wallet has no token yet
+    asyncio.create_task(inft.init(), name="inft_init")
 
     # KeeperHub setup runs in background — sets max approvals if needed
     if swap.is_configured():
@@ -79,7 +82,13 @@ async def status():
             "amount_usd": swap.SWAP_AMOUNT_USD,
         },
         "storage": storage.latest_status(),
+        "inft": inft.get_state(),
     }
+
+
+@app.get("/agent")
+async def agent_identity():
+    return inft.get_state()
 
 
 @app.get("/flows/latest")

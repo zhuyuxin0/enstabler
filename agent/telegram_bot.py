@@ -164,7 +164,7 @@ async def _handle_command(client: httpx.AsyncClient, chat_id: str, text: str) ->
         _save_subs(_subs)
         await _send(client, chat_id,
             "Enstabler online.\n"
-            "Commands: /status, /latest, /swaps, /alerts on|off")
+            "Commands: /status, /latest, /swaps, /agent, /alerts on|off")
     elif head == "/status":
         total = await db.flow_count()
         counts = await db.classification_counts()
@@ -185,6 +185,22 @@ async def _handle_command(client: httpx.AsyncClient, chat_id: str, text: str) ->
             return
         body = "\n\n".join(_fmt_flow(r) for r in rows)
         await _send(client, chat_id, f"<b>Last 5 classified</b>\n\n{body}")
+    elif head == "/agent":
+        from agent import inft
+        s = inft.get_state()
+        if not s.get("ready"):
+            await _send(client, chat_id, "Agent iNFT not ready yet.")
+            return
+        msg = (
+            f"<b>Enstabler Agent iNFT</b>\n"
+            f"contract: <code>{html.escape(s['contract_address'])}</code>\n"
+            f"tokenId : {s['token_id']}\n"
+            f"owner   : <code>{html.escape(s['owner'])}</code>\n"
+            f"model   : {html.escape(s.get('model_descriptor') or '?')}\n"
+            f"version : {html.escape(s.get('version_tag') or '?')}\n"
+            f"identity: <code>{html.escape((s.get('storage_root_hash') or '?')[:18])}…</code>"
+        )
+        await _send(client, chat_id, msg)
     elif head == "/swaps":
         rows = await db.latest_swaps(5)
         if not rows:
