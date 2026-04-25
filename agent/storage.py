@@ -21,7 +21,10 @@ from typing import Optional
 log = logging.getLogger("enstabler.storage")
 
 SNAPSHOT_INTERVAL_SECONDS = 1800   # 30 min
-SNAPSHOT_LIMIT = 1000              # how many recent flows per snapshot
+# Mainnet ingest runs ~300-1000 flows/min, so 30k flows ≈ 30-100 min of data per
+# snapshot. Consecutive snapshots overlap, giving a continuous audit trail rather
+# than 1-3 min spotchecks every 30 min.
+SNAPSHOT_LIMIT = 30_000
 
 _latest_root_hash: Optional[str] = None
 _latest_tx_hash: Optional[str] = None
