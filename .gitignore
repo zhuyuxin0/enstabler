@@ -19,6 +19,10 @@ contracts/artifacts/
 contracts/cache/
 contracts/node_modules/
 
+# Scripts (one-time setup tools)
+scripts/node_modules/
+scripts/package-lock.json
+
 # Runtime data
 data/*.db
 data/*.db-journal
