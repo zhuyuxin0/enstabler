@@ -177,7 +177,7 @@ export function AgentPanel() {
                   >
                     faucet
                   </a>
-                  ), Sepolia USDC (
+                  ) and Sepolia USDC (
                   <a
                     href="https://faucet.circle.com"
                     target="_blank"
@@ -186,15 +186,16 @@ export function AgentPanel() {
                   >
                     Circle
                   </a>
-                  ) and a Sepolia USDT mock to the KeeperHub Turnkey wallet, then
-                  restart the agent — approvals fire automatically.
+                  ) to the KeeperHub Turnkey wallet, then restart the agent —
+                  the USDC approval fires automatically. WETH is received from
+                  the swap so no pre-funding needed.
                 </span>
               </Block>
             )}
             <Block label="Trigger">
               <span className="font-mono text-xs text-muted">
-                USDC/USDT spread &gt; {swap?.threshold_bps ?? 50} bps →{" "}
-                ${swap?.amount_usd ?? 100} swap
+                Mainnet USDC/USDT spread &gt; {swap?.threshold_bps ?? 50} bps →{" "}
+                ${swap?.amount_usd ?? 100} USDC → WETH
               </span>
             </Block>
             {lastSwap ? (

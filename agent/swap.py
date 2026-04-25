@@ -39,27 +39,37 @@ SLIPPAGE_TOLERANCE = 0.01  # 1% min-out floor
 KEEPERHUB_BASE = "https://app.keeperhub.com"
 KEEPERHUB_NETWORK = os.getenv("KEEPERHUB_NETWORK", "sepolia")
 
-# Token + router addresses are env-overridable so we can flip networks without
-# touching code. Defaults are the Sepolia set.
+# The pair we trade. On Sepolia the USDC↔USDT V2 pool has near-zero liquidity,
+# so the demo target is USDC↔WETH (V2 SwapRouter has a real WETH pool that
+# actually settles). On mainnet the original USDC↔USDT pair stays the default.
+# Both endpoints are env-overridable.
 _DEFAULTS = {
     "sepolia": {
         # Circle's official Sepolia USDC (faucet: faucet.circle.com)
         "USDC": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
-        # Aave Sepolia mock USDT (faucet: app.aave.com Sepolia faucet)
-        "USDT": "0xaA8E23Fb1079EA71e0a56F48a2aA51851D8433D0",
+        # Sepolia WETH — known V2 pool depth
+        "TOKEN_OUT": "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
+        "TOKEN_OUT_SYMBOL": "WETH",
         # Uniswap V2 official Sepolia router
         "ROUTER": "0xeE567Fe1712Faf6149d80dA1E6934E354124CfE3",
     },
     "ethereum": {
         "USDC": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-        "USDT": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+        "TOKEN_OUT": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+        "TOKEN_OUT_SYMBOL": "USDT",
         "ROUTER": "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D",
     },
 }
 _DEFAULT = _DEFAULTS.get(KEEPERHUB_NETWORK, _DEFAULTS["sepolia"])
 
 USDC_ADDR = os.getenv("SWAP_USDC_ADDRESS", _DEFAULT["USDC"])
-USDT_ADDR = os.getenv("SWAP_USDT_ADDRESS", _DEFAULT["USDT"])
+# Honor the legacy SWAP_USDT_ADDRESS env var for backwards compatibility.
+TOKEN_OUT_ADDR = (
+    os.getenv("SWAP_TOKEN_OUT_ADDRESS")
+    or os.getenv("SWAP_USDT_ADDRESS")
+    or _DEFAULT["TOKEN_OUT"]
+)
+TOKEN_OUT_SYMBOL = os.getenv("SWAP_TOKEN_OUT_SYMBOL", _DEFAULT["TOKEN_OUT_SYMBOL"])
 UNISWAP_V2_ROUTER = os.getenv("SWAP_ROUTER_ADDRESS", _DEFAULT["ROUTER"])
 
 ERC20_ABI: list[dict] = [
@@ -156,7 +166,10 @@ async def _read_call(contract: str, func: str, args: list, abi: list) -> Optiona
 
 async def _ensure_approvals(wallet: str) -> bool:
     MAX_UINT256 = (1 << 256) - 1
-    targets = [(USDC_ADDR, "USDC"), (USDT_ADDR, "USDT")]
+    # Only USDC needs approval — it's the token_in (we sell USDC, receive
+    # token_out). The output token is delivered to us by the router so it
+    # doesn't need an allowance from us.
+    targets = [(USDC_ADDR, "USDC")]
     for token_addr, name in targets:
         allowance_str = await _read_call(
             token_addr, "allowance", [wallet, UNISWAP_V2_ROUTER], ERC20_ABI
@@ -210,12 +223,12 @@ async def setup() -> bool:
 
 def _direction() -> tuple[str, str, str, str]:
     """Return (token_in_addr, token_in_sym, token_out_addr, token_out_sym).
-    Buys the cheap stable so we move into the depegged side at favourable price."""
-    usdc = prices.get_price("USDC") or 1.0
-    usdt = prices.get_price("USDT") or 1.0
-    if usdc <= usdt:
-        return USDT_ADDR, "USDT", USDC_ADDR, "USDC"
-    return USDC_ADDR, "USDC", USDT_ADDR, "USDT"
+
+    Direction is fixed: when the depeg trigger fires we always sell USDC into
+    the configured TOKEN_OUT. On Sepolia that's WETH (uncorrelated safety
+    asset), on mainnet it's USDT (the other big stablecoin).
+    """
+    return USDC_ADDR, "USDC", TOKEN_OUT_ADDR, TOKEN_OUT_SYMBOL
 
 
 async def trigger_swap(spread: float, reason: str = "auto") -> Optional[str]:
@@ -227,9 +240,12 @@ async def trigger_swap(spread: float, reason: str = "auto") -> Optional[str]:
         return None
 
     token_in, token_in_sym, token_out, token_out_sym = _direction()
-    decimals = 6  # USDT and USDC both 6
-    amount_in_raw = int(SWAP_AMOUNT_USD * (10 ** decimals))
-    min_out_raw = int(amount_in_raw * (1 - SLIPPAGE_TOLERANCE))
+    decimals_in = 6  # USDC always 6 decimals
+    amount_in_raw = int(SWAP_AMOUNT_USD * (10 ** decimals_in))
+    # Output decimals vary (WETH=18, USDT=6) and we don't always know the live
+    # output price, so accept any non-zero output on testnet. For mainnet,
+    # override SWAP_MIN_OUT_RAW to enforce real slippage protection.
+    min_out_raw = int(os.getenv("SWAP_MIN_OUT_RAW", "0"))
     deadline = int(time.time()) + 600
 
     body = {
