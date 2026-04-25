@@ -105,6 +105,35 @@ function FlowRow({ flow }: { flow: Flow }) {
   );
 }
 
+function SkeletonRows() {
+  return (
+    <>
+      {Array.from({ length: 8 }).map((_, i) => (
+        <div
+          key={i}
+          className="grid grid-cols-[80px_minmax(0,1fr)_120px_120px] items-center gap-4 px-5 py-3 border-l border-y border-line bg-foreground/[0.008]"
+          style={{ opacity: Math.max(0.18, 1 - i * 0.1) }}
+        >
+          <div className="h-3 w-12 bg-foreground/5" />
+          <div className="flex items-center gap-2">
+            <div className="h-3 w-32 bg-foreground/5" />
+            <span className="text-faint">→</span>
+            <div className="h-3 w-32 bg-foreground/5" />
+          </div>
+          <div className="flex flex-col items-end gap-1.5">
+            <div className="h-3 w-16 bg-foreground/5" />
+            <div className="h-[3px] w-16 bg-foreground/5" />
+          </div>
+          <div className="flex flex-col items-end gap-1">
+            <div className="h-3 w-20 bg-foreground/5" />
+            <div className="h-2 w-12 bg-foreground/5" />
+          </div>
+        </div>
+      ))}
+    </>
+  );
+}
+
 export function FlowFeed() {
   const { data, error } = usePoll<{ flows: Flow[] }>(
     () => api.flowsLatest(40),
@@ -131,26 +160,17 @@ export function FlowFeed() {
           </div>
         </header>
 
-        {error && (
-          <div className="border border-alert/40 bg-alert-soft p-4 font-mono text-xs text-alert">
-            API error: {error.message}. Is the agent server running on{" "}
-            {process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"}?
-          </div>
-        )}
-
-        {!error && flows.length === 0 && (
-          <div className="border border-line p-8 font-mono text-xs text-muted text-center">
-            Waiting for the first classified flow…
-          </div>
-        )}
-
         <div className="fade-mask max-h-[640px] overflow-hidden no-scrollbar">
           <div className="flex flex-col gap-px">
-            <AnimatePresence initial={false}>
-              {flows.map((f) => (
-                <FlowRow key={`${f.chain}-${f.tx_hash}-${f.log_index}`} flow={f} />
-              ))}
-            </AnimatePresence>
+            {!error && flows.length === 0 ? (
+              <SkeletonRows />
+            ) : (
+              <AnimatePresence initial={false}>
+                {flows.map((f) => (
+                  <FlowRow key={`${f.chain}-${f.tx_hash}-${f.log_index}`} flow={f} />
+                ))}
+              </AnimatePresence>
+            )}
           </div>
         </div>
       </div>
