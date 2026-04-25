@@ -75,6 +75,7 @@ function aggregateByCategory(
     new Array(n).fill(0),
   );
   let grand = 0;
+  const unknownIdx = CATEGORY_ORDER.indexOf("unknown");
 
   for (const f of flows) {
     const usd = f.amount_usd || 0;
@@ -86,6 +87,10 @@ function aggregateByCategory(
     const i = CATEGORY_ORDER.indexOf(fromCat);
     const j = CATEGORY_ORDER.indexOf(toCat);
     if (i < 0 || j < 0) continue;
+    // Drop unknown → unknown noise. We can't classify either side, so the
+    // flow contributes nothing to the "where does labeled activity go" story
+    // and would otherwise consume ~99% of the chord.
+    if (i === unknownIdx && j === unknownIdx) continue;
     matrix[i][j] += usd;
     grand += usd;
   }
@@ -164,12 +169,13 @@ export function EntityGraph() {
               </span>
             </div>
             <h2 className="text-2xl tracking-tight">
-              Where stablecoins move — by counterparty type
+              Flows that touch a labeled entity
             </h2>
             <p className="mt-1 text-xs text-muted max-w-xl">
-              Aggregated from the last 500 classified mainnet flows. Each arc
-              is a category; ribbon thickness is the USD volume from one
-              category to another. Hover an arc to isolate its flows.
+              Aggregated from the last 500 classified mainnet flows. Random
+              EOA-to-EOA traffic is filtered out — only flows where at least
+              one counterparty is a known CEX / DEX / Bridge / Lending /
+              Issuer / MEV are charted. Hover an arc to isolate its flows.
             </p>
           </div>
           <div className="hidden md:flex flex-col items-end gap-1 font-mono text-[10px] uppercase tracking-[0.2em] text-faint">
@@ -244,6 +250,10 @@ export function EntityGraph() {
                       if (!path) return null;
                       const dim = hover !== null && hover !== g.index;
                       const mid = (g.startAngle + g.endAngle) / 2;
+                      const arcAngle = g.endAngle - g.startAngle;
+                      // Hide perimeter labels for tiny arcs — they overlap into
+                      // illegible clusters. The right rail surfaces them all.
+                      const showLabel = arcAngle > 0.08; // ~4.5°
                       const labelRadius = RADIUS + ARC_WIDTH + 26;
                       const lx = Math.sin(mid) * labelRadius;
                       const ly = -Math.cos(mid) * labelRadius;
@@ -273,42 +283,42 @@ export function EntityGraph() {
                               transition: "fill-opacity 0.3s ease",
                             }}
                           />
-                          <text
-                            x={lx}
-                            y={ly}
-                            textAnchor={labelAnchor}
-                            dominantBaseline="middle"
-                            fill={
-                              dim
-                                ? "rgba(237,237,237,0.35)"
-                                : "rgba(237,237,237,0.92)"
-                            }
-                            fontFamily="var(--font-sans, sans-serif)"
-                            fontSize={13}
-                            style={{
-                              transition: "fill 0.3s ease",
-                            }}
-                          >
-                            {CATEGORY_LABEL[cat]}
-                          </text>
-                          <text
-                            x={lx}
-                            y={ly + 14}
-                            textAnchor={labelAnchor}
-                            dominantBaseline="middle"
-                            fill={
-                              dim
-                                ? "rgba(237,237,237,0.2)"
-                                : "rgba(237,237,237,0.55)"
-                            }
-                            fontFamily="var(--font-mono, monospace)"
-                            fontSize={10}
-                            style={{
-                              transition: "fill 0.3s ease",
-                            }}
-                          >
-                            {fmtUsd(total)}
-                          </text>
+                          {showLabel && (
+                            <>
+                              <text
+                                x={lx}
+                                y={ly}
+                                textAnchor={labelAnchor}
+                                dominantBaseline="middle"
+                                fill={
+                                  dim
+                                    ? "rgba(237,237,237,0.35)"
+                                    : "rgba(237,237,237,0.92)"
+                                }
+                                fontFamily="var(--font-sans, sans-serif)"
+                                fontSize={13}
+                                style={{ transition: "fill 0.3s ease" }}
+                              >
+                                {CATEGORY_LABEL[cat]}
+                              </text>
+                              <text
+                                x={lx}
+                                y={ly + 14}
+                                textAnchor={labelAnchor}
+                                dominantBaseline="middle"
+                                fill={
+                                  dim
+                                    ? "rgba(237,237,237,0.2)"
+                                    : "rgba(237,237,237,0.55)"
+                                }
+                                fontFamily="var(--font-mono, monospace)"
+                                fontSize={10}
+                                style={{ transition: "fill 0.3s ease" }}
+                              >
+                                {fmtUsd(total)}
+                              </text>
+                            </>
+                          )}
                         </g>
                       );
                     })}
@@ -325,7 +335,7 @@ export function EntityGraph() {
                       fontSize={10}
                       letterSpacing="0.22em"
                     >
-                      USD VOLUME · LAST 500 FLOWS
+                      LABELED-TOUCHING USD VOLUME
                     </text>
                     <text
                       textAnchor="middle"
