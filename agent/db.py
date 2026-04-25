@@ -59,6 +59,27 @@ CREATE TABLE IF NOT EXISTS swaps (
     error                    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_swaps_ts ON swaps(ts DESC);
+
+CREATE TABLE IF NOT EXISTS cctp_messages (
+    id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts                          INTEGER NOT NULL,
+    source_chain                TEXT NOT NULL,
+    source_domain               INTEGER NOT NULL,
+    destination_chain           TEXT NOT NULL,
+    destination_domain          INTEGER NOT NULL,
+    nonce                       INTEGER NOT NULL,
+    burn_token                  TEXT NOT NULL,
+    amount_raw                  TEXT NOT NULL,
+    amount_usd                  REAL,
+    depositor                   TEXT NOT NULL,
+    mint_recipient              TEXT NOT NULL,
+    tx_hash                     TEXT NOT NULL,
+    block_number                INTEGER NOT NULL,
+    log_index                   INTEGER NOT NULL,
+    UNIQUE(source_domain, nonce)
+);
+CREATE INDEX IF NOT EXISTS idx_cctp_ts ON cctp_messages(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_cctp_dst ON cctp_messages(destination_domain);
 """
 
 
@@ -313,3 +334,67 @@ async def swap_count() -> int:
         async with db.execute("SELECT COUNT(*) FROM swaps") as cur:
             row = await cur.fetchone()
             return row[0] if row else 0
+
+
+# ---------- cctp messages ----------
+
+async def insert_cctp_message(
+    *,
+    ts: int,
+    source_chain: str,
+    source_domain: int,
+    destination_chain: str,
+    destination_domain: int,
+    nonce: int,
+    burn_token: str,
+    amount_raw: str,
+    amount_usd: Optional[float],
+    depositor: str,
+    mint_recipient: str,
+    tx_hash: str,
+    block_number: int,
+    log_index: int,
+) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        try:
+            await db.execute(
+                """INSERT INTO cctp_messages
+                   (ts, source_chain, source_domain, destination_chain, destination_domain,
+                    nonce, burn_token, amount_raw, amount_usd, depositor, mint_recipient,
+                    tx_hash, block_number, log_index)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (ts, source_chain, source_domain, destination_chain, destination_domain,
+                 nonce, burn_token, amount_raw, amount_usd, depositor, mint_recipient,
+                 tx_hash, block_number, log_index),
+            )
+            await db.commit()
+            return True
+        except aiosqlite.IntegrityError:
+            return False  # duplicate (source_domain, nonce)
+
+
+async def latest_cctp_messages(limit: int = 50) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM cctp_messages ORDER BY ts DESC LIMIT ?", (limit,)
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def cctp_count() -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT COUNT(*) FROM cctp_messages") as cur:
+            row = await cur.fetchone()
+            return row[0] if row else 0
+
+
+async def cctp_volume_by_destination() -> list[dict]:
+    """Return sum of amount_usd per destination chain, descending by volume."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT destination_chain, COUNT(*) as count, SUM(amount_usd) as volume_usd
+               FROM cctp_messages GROUP BY destination_chain ORDER BY volume_usd DESC"""
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
