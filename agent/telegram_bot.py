@@ -164,7 +164,7 @@ async def _handle_command(client: httpx.AsyncClient, chat_id: str, text: str) ->
         _save_subs(_subs)
         await _send(client, chat_id,
             "Enstabler online.\n"
-            "Commands: /status, /latest, /swaps, /agent, /alerts on|off")
+            "Commands: /status, /latest, /swaps, /cctp, /agent, /alerts on|off")
     elif head == "/status":
         total = await db.flow_count()
         counts = await db.classification_counts()
@@ -185,6 +185,20 @@ async def _handle_command(client: httpx.AsyncClient, chat_id: str, text: str) ->
             return
         body = "\n\n".join(_fmt_flow(r) for r in rows)
         await _send(client, chat_id, f"<b>Last 5 classified</b>\n\n{body}")
+    elif head == "/cctp":
+        rows = await db.latest_cctp_messages(5)
+        if not rows:
+            await _send(client, chat_id, "No CCTP messages observed yet.")
+            return
+        lines = []
+        for r in rows:
+            amt = r.get("amount_usd") or 0.0
+            lines.append(
+                f"<b>{r['source_chain']} → {r['destination_chain']}</b>  "
+                f"${amt:,.0f} USDC\n"
+                f"  nonce={r['nonce']}  tx=<code>{html.escape((r.get('tx_hash') or '')[:18])}…</code>"
+            )
+        await _send(client, chat_id, "<b>Recent CCTP transfers</b>\n\n" + "\n\n".join(lines))
     elif head == "/agent":
         from agent import inft
         s = inft.get_state()

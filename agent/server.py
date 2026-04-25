@@ -5,11 +5,14 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 
-from agent import inft, pipeline, prices, storage, swap, telegram_bot, watcher
+from agent import cctp, inft, pipeline, prices, storage, swap, telegram_bot, watcher
 from agent.db import (
+    cctp_count,
+    cctp_volume_by_destination,
     classification_counts,
     flow_count,
     init_db,
+    latest_cctp_messages,
     latest_classified,
     latest_flows,
     latest_swaps,
@@ -46,6 +49,7 @@ async def lifespan(app: FastAPI):
     _tasks.append(asyncio.create_task(prices.prices_task(), name="prices"))
     _tasks.append(asyncio.create_task(watcher.alchemy_ws_task(), name="alchemy_ws"))
     _tasks.append(asyncio.create_task(watcher.bitquery_task(), name="bitquery"))
+    _tasks.append(asyncio.create_task(cctp.cctp_task(), name="cctp"))
     _tasks.append(asyncio.create_task(telegram_bot.telegram_task(), name="telegram"))
     _tasks.append(asyncio.create_task(storage.storage_task(), name="storage"))
     try:
@@ -73,6 +77,7 @@ async def status():
         "flows_ingested": await flow_count(),
         "classifications": await classification_counts(),
         "swaps": await swap_count(),
+        "cctp_messages": await cctp_count(),
         "watchers": [t.get_name() for t in _tasks if not t.done()],
         "swap": {
             "configured": swap.is_configured(),
@@ -104,6 +109,16 @@ async def classifications_latest(limit: int = Query(default=50, ge=1, le=500)):
 @app.get("/swaps/latest")
 async def swaps_latest(limit: int = Query(default=20, ge=1, le=200)):
     return {"swaps": await latest_swaps(limit)}
+
+
+@app.get("/cctp/latest")
+async def cctp_latest(limit: int = Query(default=50, ge=1, le=500)):
+    return {"messages": await latest_cctp_messages(limit)}
+
+
+@app.get("/cctp/by-destination")
+async def cctp_by_destination():
+    return {"by_destination": await cctp_volume_by_destination()}
 
 
 @app.post("/admin/trigger-swap")
