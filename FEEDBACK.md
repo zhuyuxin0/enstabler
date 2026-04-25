@@ -335,6 +335,7 @@ was forced by the missing discovery API.**
 | 3b | Numeric chain-ID escape hatch undocumented | **VERIFIED** — `network` parameter documented as a "name" only; API silently accepts numeric strings (`"16602"` works) |
 | 4 | No REST endpoint for wallet-address discovery | **VERIFIED** — CLI has `kh wallet`, REST equivalent missing; documented onboarding requires dashboard UI |
 | 6 | Agentic wallet `npx` invocation fails (bare-package `npx` won't pick a bin when the package has two) | **VERIFIED** — `npx @keeperhub/wallet skill install` errors `could not determine executable to run`; needs `npx -p @keeperhub/wallet keeperhub-wallet skill install` |
+| 7 | No public MCP-published workflow is callable; the agentic wallet has no paid endpoint to exercise | **VERIFIED** — every `/api/mcp/workflows/<id>/call` request 404s for all 81 public workflows; `search_workflows` returns the SPA 404 page. End-to-end x402 is unbuildable today. |
 
 ## Bonus issue 6 — Agentic wallet docs show an `npx` invocation that fails
 
@@ -379,6 +380,64 @@ fails for everyone, on every machine. Caught me on first run.
 **Suggested fix**: replace every `npx @keeperhub/wallet …` example with
 `npx -p @keeperhub/wallet keeperhub-wallet …`, on both the Agentic Wallet
 page and any quickstart that links to it.
+
+## Bonus issue 7 — MCP workflow gateway returns 404 for every public workflow
+
+**Verdict: VERIFIED**
+
+The Agentic Wallet docs say the wallet auto-pays "any 402 from a KeeperHub
+workflow" matching the URL pattern `/api/mcp/workflows/<slug>/call`. The
+docs also reference `search_workflows` and `call_workflow` MCP meta-tools.
+In practice, neither endpoint resolves on `app.keeperhub.com`:
+
+```bash
+# Tried calling the most prize-relevant workflow (Chronicle: Stablecoin Peg
+# Monitor) via the path the wallet is hard-coded to recognise:
+$ curl -s -X POST https://app.keeperhub.com/api/mcp/workflows/tphses4snohdn08apdzax/call \
+    -H "Authorization: Bearer kh_<live_key>" -H "Content-Type: application/json" -d '{}'
+{"error":"Workflow not found"}    # HTTP 404
+
+# Tried the discovery meta-tool the docs claim exists:
+$ curl -s -X POST https://app.keeperhub.com/api/mcp/search_workflows \
+    -H "Authorization: Bearer kh_<live_key>" -H "Content-Type: application/json" \
+    -d '{"query":"stablecoin peg"}'
+<!DOCTYPE html>...<title>404: This page could not be found.</title>...
+```
+
+I tested every workflow `id` returned by `GET /api/workflows/public` (81
+workflows). All 404 on the MCP path. The wallet's bundle source includes
+a hard-coded check that rejects any 402 not coming from
+`/api/mcp/workflows/<slug>/call`, so even if a paid workflow existed at a
+different path, the wallet wouldn't sign for it (`KEEP-311` is the
+referenced internal ticket for "generic x402").
+
+**Why it matters**: this is a complete dead-end for any builder following
+the Agentic Wallet docs. The wallet provisions correctly (good), the HMAC
+signing protocol is well-defined and reverse-engineerable from the bundle
+(also good), but **there are zero callable workflows that exercise it**.
+For a bounty submission this is the most-blocking gap of all six bugs:
+the integration story stops at "I have a wallet" and can't progress.
+
+**Suggested fix** (priority order):
+1. Publish at least one example workflow to MCP — even an unpaid `mcp-test`
+   echo workflow — so the wallet's flow can be exercised end-to-end. The
+   docs explicitly reference such a workflow (*"Run the KeeperHub
+   `mcp-test` workflow for `0xC300...`"*) but it's not actually published.
+2. Document **exactly** how a creator publishes a workflow to MCP. The
+   Workflows API has a `/go-live` endpoint but no separate "publish to
+   MCP" surface — clarify whether `/go-live` is the same thing or a
+   different thing.
+3. Document the slug derivation rule. Is the MCP slug the workflow `id`,
+   or a custom human-readable slug, or set on `/go-live`? The wallet
+   regex accepts `[a-zA-Z0-9_-]+` which matches both, leaving builders
+   to guess.
+4. Either implement `/api/mcp/search_workflows` as a real REST endpoint
+   (it's currently the SPA's 404 page), or remove the reference from the
+   docs. As written it implies REST availability that doesn't exist.
+
+Until at least #1 is fixed, the agentic-wallet x402 narrative is
+unbuildable by integrators. We provisioned the wallet, decoded the HMAC
+header scheme, and stopped at "no paid workflow to call".
 
 ## Working integration verified
 
