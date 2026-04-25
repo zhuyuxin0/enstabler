@@ -43,6 +43,22 @@ CREATE TABLE IF NOT EXISTS classifications (
 CREATE INDEX IF NOT EXISTS idx_cls_ts ON classifications(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_cls_classification ON classifications(classification);
 CREATE INDEX IF NOT EXISTS idx_cls_published ON classifications(published);
+
+CREATE TABLE IF NOT EXISTS swaps (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts                       INTEGER NOT NULL,
+    trigger_reason           TEXT,
+    spread                   REAL,
+    token_in_symbol          TEXT NOT NULL,
+    token_out_symbol         TEXT NOT NULL,
+    amount_in_usd            REAL NOT NULL,
+    network                  TEXT NOT NULL,
+    keeperhub_execution_id   TEXT,
+    keeperhub_status         TEXT,
+    tx_hash                  TEXT,
+    error                    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_swaps_ts ON swaps(ts DESC);
 """
 
 
@@ -242,3 +258,58 @@ async def set_explanation(classification_id: int, explanation: str) -> None:
             (explanation, classification_id),
         )
         await db.commit()
+
+
+# ---------- swaps ----------
+
+async def insert_swap(
+    *,
+    ts: int,
+    trigger_reason: str,
+    spread: float,
+    token_in_symbol: str,
+    token_out_symbol: str,
+    amount_in_usd: float,
+    network: str,
+    keeperhub_execution_id: Optional[str],
+    keeperhub_status: Optional[str],
+    error: Optional[str] = None,
+) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """INSERT INTO swaps
+               (ts, trigger_reason, spread, token_in_symbol, token_out_symbol,
+                amount_in_usd, network, keeperhub_execution_id, keeperhub_status, error)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (ts, trigger_reason, spread, token_in_symbol, token_out_symbol,
+             amount_in_usd, network, keeperhub_execution_id, keeperhub_status, error),
+        )
+        await db.commit()
+        return cur.lastrowid or 0
+
+
+async def update_swap_status(
+    swap_id: int, keeperhub_status: str, tx_hash: Optional[str] = None, error: Optional[str] = None
+) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE swaps SET keeperhub_status = ?, tx_hash = COALESCE(?, tx_hash), error = COALESCE(?, error) WHERE id = ?",
+            (keeperhub_status, tx_hash, error, swap_id),
+        )
+        await db.commit()
+
+
+async def latest_swaps(limit: int = 20) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM swaps ORDER BY ts DESC LIMIT ?", (limit,)
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def swap_count() -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT COUNT(*) FROM swaps") as cur:
+            row = await cur.fetchone()
+            return row[0] if row else 0
