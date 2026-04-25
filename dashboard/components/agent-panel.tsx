@@ -157,13 +157,40 @@ export function AgentPanel() {
                   </>
                 ) : swap?.configured ? (
                   <>
-                    <span className="text-alert">●</span> awaiting funding
+                    <span className="text-alert">●</span> awaiting{" "}
+                    {swap.network} funding
                   </>
                 ) : (
                   <span className="text-muted">not configured</span>
                 )}
               </span>
             </Block>
+            {swap?.configured && !swap?.ready && (
+              <Block label="Funding needed">
+                <span className="font-mono text-[11px] text-muted leading-relaxed">
+                  Send Sepolia ETH (
+                  <a
+                    href="https://sepoliafaucet.com"
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    className="text-signal hover:underline"
+                  >
+                    faucet
+                  </a>
+                  ), Sepolia USDC (
+                  <a
+                    href="https://faucet.circle.com"
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    className="text-signal hover:underline"
+                  >
+                    Circle
+                  </a>
+                  ) and a Sepolia USDT mock to the KeeperHub Turnkey wallet, then
+                  restart the agent — approvals fire automatically.
+                </span>
+              </Block>
+            )}
             <Block label="Trigger">
               <span className="font-mono text-xs text-muted">
                 USDC/USDT spread &gt; {swap?.threshold_bps ?? 50} bps →{" "}
