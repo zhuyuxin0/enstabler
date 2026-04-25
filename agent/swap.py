@@ -107,6 +107,17 @@ async def _post(path: str, body: dict) -> tuple[int, dict]:
         return 0, {"error": str(e)}
 
 
+def _is_success(status: int, body: dict) -> bool:
+    """KeeperHub returns 200 for read calls and either 200 or 202 for writes
+    (synchronous-completed). Treat both as success when the body says completed."""
+    if status not in (200, 202):
+        return False
+    body_status = (body.get("status") or "").lower()
+    if body_status and body_status not in ("completed", "pending", "running"):
+        return False
+    return True
+
+
 async def _read_call(contract: str, func: str, args: list, abi: list) -> Optional[Any]:
     body = {
         "contractAddress": contract,
@@ -116,7 +127,7 @@ async def _read_call(contract: str, func: str, args: list, abi: list) -> Optiona
         "abi": json.dumps(abi),
     }
     status, data = await _post("/api/execute/contract-call", body)
-    if status == 200:
+    if _is_success(status, data):
         return data.get("result")
     log.warning("swap: read %s.%s failed: status=%s body=%s", contract, func, status, data)
     return None
@@ -147,7 +158,7 @@ async def _ensure_approvals(wallet: str) -> bool:
             "gasLimitMultiplier": "1.3",
         }
         status, data = await _post("/api/execute/contract-call", body)
-        if status != 200:
+        if not _is_success(status, data):
             log.warning("swap: %s approve failed: status=%s body=%s", name, status, data)
             return False
         log.info("swap: %s approve submitted (executionId=%s status=%s)",
@@ -215,7 +226,8 @@ async def trigger_swap(spread: float, reason: str = "auto") -> Optional[str]:
 
     exec_id = data.get("executionId")
     kh_status = data.get("status")
-    error = (data.get("error") or data.get("details")) if status != 200 else None
+    success = _is_success(status, data)
+    error = (data.get("error") or data.get("details")) if not success else None
 
     swap_id = await db.insert_swap(
         ts=int(time.time()),
@@ -230,7 +242,7 @@ async def trigger_swap(spread: float, reason: str = "auto") -> Optional[str]:
         error=error,
     )
 
-    if status == 200 and exec_id:
+    if success and exec_id:
         _last_swap_ts = time.time()
         log.info(
             "swap: triggered %s→%s $%s spread=%.5f exec=%s status=%s",

@@ -52,7 +52,18 @@ Direct Execution page or a dedicated "Supported Networks" page) — not as an
 error response. As an integrator, I want to know up front whether my chain is
 supported.
 
-**3. Numeric chain IDs are accepted, but undocumented.**
+**3a. Direct Execution returns HTTP 202 for synchronous completion.**
+The Direct Execution docs claim:
+> "The execution runs synchronously. Status will be `completed` or `failed` when the request returns."
+
+In practice, a successful `approve()` write returned **HTTP 202** (not 200) with body
+`{"executionId":"2gtztnd17qabe3mr7reol","status":"completed"}`. This is fine — 202
+is appropriate for accepted write operations even when the body is conclusive — but
+the docs should call it out. Integration code that gates on `status == 200` will
+silently treat completed writes as failures. The docs' status-code section should
+list both 200 and 202 with the meaning of each.
+
+**3b. Numeric chain IDs are accepted, but undocumented.**
 By accident, I tried `network: "16602"` (the chain ID for 0G Galileo). The
 error switched to `"No explorer API configured for chain 16602"` — meaning
 the chain *is* recognized at the routing layer; only the auto-ABI explorer
