@@ -198,11 +198,19 @@ This is a footgun for two structural reasons:
 
 ---
 
-## Claim 3b — Numeric chain-ID escape hatch is undocumented
+## Claim 3b — Numeric chain-ID escape hatch is undocumented in KeeperHub's docs
 
 **Verdict: VERIFIED**
 
-The Direct Execution page describes the `network` parameter as:
+To be precise: this bug is about **KeeperHub's** docs, not the chain's.
+0G publishes its own chain id at the standard 0G builder hub
+(`https://0g.ai/builder-hub` → Chain → `0G-GALILEO-TESTNET CHAIN ID 16602`).
+That part is fine. The KeeperHub-side gap is that **KeeperHub's Direct
+Execution page tells you the `network` parameter is a name** and doesn't
+mention that you can pass a chain id instead — even though the API
+silently routes correctly when you do.
+
+The Direct Execution page describes the parameter as:
 
 > `network` (required): Blockchain network name (e.g., `ethereum`, `base`,
 > `polygon`)
@@ -215,8 +223,8 @@ in execution requests.
 ### Empirical reproduction
 
 By accident I tried `network: "16602"` (decimal chain ID for 0G Galileo,
-which is *not* in the named-networks list). The error switched from
-"Unsupported network" to:
+which is *not* in KeeperHub's named-networks list, even though 0G's docs
+publish the same id). The error switched from "Unsupported network" to:
 
 > `{"error":"ABI is required. Could not auto-fetch ABI: No explorer API
 > configured for chain 16602","field":"abi"}`
