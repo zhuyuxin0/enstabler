@@ -78,7 +78,7 @@ export function Hero() {
               />
               <span className="text-[11px] uppercase tracking-[0.22em] text-muted font-mono">
                 {isLive
-                  ? "Live · Ethereum mainnet · 0G Galileo"
+                  ? "Reading Ethereum mainnet · Writing 0G Galileo testnet"
                   : "Agent offline · start the backend"}
               </span>
             </div>
