@@ -334,6 +334,51 @@ was forced by the missing discovery API.**
 | 3a | HTTP 202 not documented as success code | **VERIFIED** — docs list error codes (401, 422, 429, 400) but never the success code; live writes return 202 |
 | 3b | Numeric chain-ID escape hatch undocumented | **VERIFIED** — `network` parameter documented as a "name" only; API silently accepts numeric strings (`"16602"` works) |
 | 4 | No REST endpoint for wallet-address discovery | **VERIFIED** — CLI has `kh wallet`, REST equivalent missing; documented onboarding requires dashboard UI |
+| 6 | Agentic wallet `npx` invocation fails (bare-package `npx` won't pick a bin when the package has two) | **VERIFIED** — `npx @keeperhub/wallet skill install` errors `could not determine executable to run`; needs `npx -p @keeperhub/wallet keeperhub-wallet skill install` |
+
+## Bonus issue 6 — Agentic wallet docs show an `npx` invocation that fails
+
+**Verdict: VERIFIED**
+
+The Agentic Wallet docs (`docs.keeperhub.com/ai-tools/agentic-wallet`)
+recommend:
+
+```bash
+npx @keeperhub/wallet skill install
+npx @keeperhub/wallet add
+```
+
+Running the first command on a clean Mac (Node 22, npm 10) produces:
+
+```
+npm error could not determine executable to run
+```
+
+The cause: `@keeperhub/wallet@0.1.7` exposes **two** bin entries —
+`keeperhub-wallet` and `keeperhub-wallet-hook` — and `npx <package>` only
+auto-picks the binary name when a package has exactly one. With two bins
+npx bails. The working invocation is:
+
+```bash
+npx -p @keeperhub/wallet keeperhub-wallet skill install
+npx -p @keeperhub/wallet keeperhub-wallet add
+npx -p @keeperhub/wallet keeperhub-wallet info
+```
+
+Confirmed by `npm view @keeperhub/wallet bin`:
+```
+{
+  'keeperhub-wallet': 'bin/keeperhub-wallet.js',
+  'keeperhub-wallet-hook': 'bin/keeperhub-wallet-hook.js'
+}
+```
+
+This is a hard onboarding blocker — the very first command in the docs
+fails for everyone, on every machine. Caught me on first run.
+
+**Suggested fix**: replace every `npx @keeperhub/wallet …` example with
+`npx -p @keeperhub/wallet keeperhub-wallet …`, on both the Agentic Wallet
+page and any quickstart that links to it.
 
 ## Working integration verified
 
