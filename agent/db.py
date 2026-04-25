@@ -80,6 +80,18 @@ CREATE TABLE IF NOT EXISTS cctp_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_cctp_ts ON cctp_messages(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_cctp_dst ON cctp_messages(destination_domain);
+
+CREATE TABLE IF NOT EXISTS kh_executions (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts                  INTEGER NOT NULL,
+    classification_id   INTEGER,
+    workflow_id         TEXT NOT NULL,
+    execution_id        TEXT,
+    status              TEXT,
+    error               TEXT,
+    inputs_json         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_kh_exec_ts ON kh_executions(ts DESC);
 """
 
 
@@ -385,6 +397,43 @@ async def latest_cctp_messages(limit: int = 50) -> list[dict]:
 async def cctp_count() -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT COUNT(*) FROM cctp_messages") as cur:
+            row = await cur.fetchone()
+            return row[0] if row else 0
+
+
+async def insert_kh_execution(
+    *,
+    ts: int,
+    classification_id: Optional[int],
+    workflow_id: str,
+    execution_id: Optional[str],
+    status: Optional[str],
+    error: Optional[str],
+    inputs_json: Optional[str],
+) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """INSERT INTO kh_executions
+               (ts, classification_id, workflow_id, execution_id, status, error, inputs_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (ts, classification_id, workflow_id, execution_id, status, error, inputs_json),
+        )
+        await db.commit()
+        return cur.lastrowid or 0
+
+
+async def latest_kh_executions(limit: int = 20) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM kh_executions ORDER BY ts DESC LIMIT ?", (limit,)
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def kh_execution_count() -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT COUNT(*) FROM kh_executions") as cur:
             row = await cur.fetchone()
             return row[0] if row else 0
 

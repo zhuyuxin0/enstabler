@@ -13,9 +13,11 @@ from agent.db import (
     classification_counts,
     flow_count,
     init_db,
+    kh_execution_count,
     latest_cctp_messages,
     latest_classified,
     latest_flows,
+    latest_kh_executions,
     latest_swaps,
     swap_count,
 )
@@ -89,6 +91,7 @@ async def status():
         "classifications": await classification_counts(),
         "swaps": await swap_count(),
         "cctp_messages": await cctp_count(),
+        "kh_executions": await kh_execution_count(),
         "watchers": [t.get_name() for t in _tasks if not t.done()],
         "swap": {
             "configured": swap.is_configured(),
@@ -130,6 +133,11 @@ async def cctp_latest(limit: int = Query(default=50, ge=1, le=500)):
 @app.get("/cctp/by-destination")
 async def cctp_by_destination():
     return {"by_destination": await cctp_volume_by_destination()}
+
+
+@app.get("/kh/latest")
+async def kh_latest(limit: int = Query(default=20, ge=1, le=200)):
+    return {"executions": await latest_kh_executions(limit)}
 
 
 @app.post("/admin/trigger-swap")

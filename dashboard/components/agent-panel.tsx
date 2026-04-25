@@ -1,6 +1,6 @@
 "use client";
 
-import { api, type AgentStatus, type Swap } from "@/lib/api";
+import { api, type AgentStatus, type KhExecution, type Swap } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { fmtUsd, relTime, shortAddr } from "@/lib/format";
 import { usePoll } from "@/lib/use-poll";
@@ -32,11 +32,17 @@ export function AgentPanel() {
     () => api.swapsLatest(1),
     8000,
   );
+  const { data: khData } = usePoll<{ executions: KhExecution[] }>(
+    () => api.khLatest(1),
+    8000,
+  );
 
   const inft = status?.inft;
   const storage = status?.storage;
   const swap = status?.swap;
   const lastSwap = swapsData?.swaps?.[0];
+  const lastKh = khData?.executions?.[0];
+  const khTotal = status?.kh_executions ?? 0;
 
   return (
     <section className="w-full px-6 py-12 sm:px-10 lg:px-16 border-b border-line">
@@ -227,6 +233,28 @@ export function AgentPanel() {
                 </span>
               </Block>
             )}
+            <div className="mt-2 pt-4 border-t border-line">
+              <Block label="KeeperHub MCP · workflow runs">
+                <span className="font-mono text-xs">
+                  <span className="text-signal">●</span>{" "}
+                  {fmtUsd(khTotal).replace("$", "")} executions on critical
+                  classifications
+                </span>
+              </Block>
+              {lastKh ? (
+                <div className="mt-2 font-mono text-[10px] text-faint break-all">
+                  last exec:{" "}
+                  <span className="text-foreground/80">
+                    {(lastKh.execution_id || "—").slice(0, 18)}…
+                  </span>{" "}
+                  · {lastKh.status || "?"} · {relTime(lastKh.ts)}
+                </div>
+              ) : (
+                <div className="mt-2 font-mono text-[10px] text-faint">
+                  no risk-3 classifications yet
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>

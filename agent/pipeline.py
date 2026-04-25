@@ -10,7 +10,10 @@ import logging
 import time
 from typing import Any
 
+import os
+
 from agent import classifier, compute, db, features, storage, telegram_bot
+from agent.keeperhub_mcp import execute_oneoff as kh_mcp_execute
 from agent.publisher import PublishArgs, Publisher
 from agent.stablecoins import ETHEREUM
 
@@ -72,6 +75,8 @@ async def process_flow(flow_id: int) -> None:
     asyncio.create_task(_maybe_publish(cls_id, flow, cls, risk))
     if risk >= 2:
         asyncio.create_task(_maybe_explain(cls_id, flow, feats, cls, risk))
+    if risk >= 3:
+        asyncio.create_task(_maybe_kh_mcp(cls_id, flow, cls, risk))
     if cls == "suspicious" and amount_usd > SUSPICIOUS_ALERT_USD:
         asyncio.create_task(
             telegram_bot.broadcast_alert(
@@ -91,6 +96,53 @@ async def _maybe_explain(
     if text:
         await db.set_explanation(classification_id, text)
         log.info("compute: explained cls_id=%s (%d chars)", classification_id, len(text))
+
+
+async def _maybe_kh_mcp(
+    classification_id: int, flow: dict[str, Any], cls: str, risk: int
+) -> None:
+    """Fire a KeeperHub workflow execution via MCP for critical (risk=3) flows.
+
+    This is the second KeeperHub integration alongside the depeg-swap Direct
+    Execution: every critical classification produces a verifiable KH workflow
+    execution record on KeeperHub's side, MCP-driven from our agent.
+    """
+    workflow_id = os.getenv("KEEPERHUB_WORKFLOW_ID")
+    if not workflow_id:
+        return
+    inputs = {
+        "classification_id": classification_id,
+        "tx_hash": flow.get("tx_hash"),
+        "stablecoin": flow.get("stablecoin"),
+        "amount_usd": flow.get("amount_usd"),
+        "from": flow.get("from_addr"),
+        "to": flow.get("to_addr"),
+        "classification": cls,
+        "risk_level": risk,
+    }
+    inputs_json = json.dumps(inputs, default=str)
+    ts = int(time.time())
+    try:
+        result = await kh_mcp_execute(workflow_id, inputs)
+        if result is None:
+            return  # not configured
+        exec_id = result.get("executionId")
+        status = result.get("status")
+        log.info(
+            "kh_mcp: workflow exec=%s status=%s for cls_id=%s",
+            exec_id, status, classification_id,
+        )
+        await db.insert_kh_execution(
+            ts=ts, classification_id=classification_id, workflow_id=workflow_id,
+            execution_id=exec_id, status=status, error=None, inputs_json=inputs_json,
+        )
+    except Exception as e:
+        log.warning("kh_mcp: execute failed: %s", e)
+        await db.insert_kh_execution(
+            ts=ts, classification_id=classification_id, workflow_id=workflow_id,
+            execution_id=None, status="failed", error=str(e)[:500],
+            inputs_json=inputs_json,
+        )
 
 
 async def _maybe_publish(

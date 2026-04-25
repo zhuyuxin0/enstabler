@@ -11,6 +11,7 @@ export type AgentStatus = {
   classifications: Record<string, number>;
   swaps: number;
   cctp_messages: number;
+  kh_executions: number;
   watchers: string[];
   swap: {
     configured: boolean;
@@ -85,6 +86,17 @@ export type CctpVolume = {
   volume_usd: number | null;
 };
 
+export type KhExecution = {
+  id: number;
+  ts: number;
+  classification_id: number | null;
+  workflow_id: string;
+  execution_id: string | null;
+  status: string | null;
+  error: string | null;
+  inputs_json: string | null;
+};
+
 export type Swap = {
   id: number;
   ts: number;
@@ -118,4 +130,6 @@ export const api = {
     getJson<{ by_destination: CctpVolume[] }>(`/cctp/by-destination`),
   swapsLatest: (limit = 20) =>
     getJson<{ swaps: Swap[] }>(`/swaps/latest?limit=${limit}`),
+  khLatest: (limit = 20) =>
+    getJson<{ executions: KhExecution[] }>(`/kh/latest?limit=${limit}`),
 };
