@@ -3,10 +3,18 @@ import logging
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 
-from agent import pipeline, prices, telegram_bot, watcher
-from agent.db import classification_counts, flow_count, init_db, latest_classified, latest_flows
+from agent import pipeline, prices, swap, telegram_bot, watcher
+from agent.db import (
+    classification_counts,
+    flow_count,
+    init_db,
+    latest_classified,
+    latest_flows,
+    latest_swaps,
+    swap_count,
+)
 from agent.publisher import Publisher
 
 load_dotenv()
@@ -14,6 +22,8 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+# httpx logs full URLs at INFO, which leaks the Telegram bot token via getUpdates URLs
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 _tasks: list[asyncio.Task] = []
 
@@ -25,6 +35,10 @@ async def lifespan(app: FastAPI):
     publisher = Publisher()
     if await publisher.setup():
         pipeline.set_publisher(publisher)
+
+    # KeeperHub setup runs in background — sets max approvals if needed
+    if swap.is_configured():
+        asyncio.create_task(swap.setup(), name="swap_setup")
 
     _tasks.append(asyncio.create_task(prices.prices_task(), name="prices"))
     _tasks.append(asyncio.create_task(watcher.alchemy_ws_task(), name="alchemy_ws"))
@@ -39,7 +53,7 @@ async def lifespan(app: FastAPI):
         _tasks.clear()
 
 
-app = FastAPI(title="Enstabler", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="Enstabler", version="0.4.0", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -51,10 +65,17 @@ def health():
 async def status():
     return {
         "agent": "enstabler",
-        "milestone": "M3",
+        "milestone": "M3+",
         "flows_ingested": await flow_count(),
         "classifications": await classification_counts(),
+        "swaps": await swap_count(),
         "watchers": [t.get_name() for t in _tasks if not t.done()],
+        "swap": {
+            "configured": swap.is_configured(),
+            "ready": swap.is_ready(),
+            "threshold_bps": int(swap.SPREAD_THRESHOLD * 10_000),
+            "amount_usd": swap.SWAP_AMOUNT_USD,
+        },
     }
 
 
@@ -66,3 +87,27 @@ async def flows_latest(limit: int = Query(default=50, ge=1, le=500)):
 @app.get("/classifications/latest")
 async def classifications_latest(limit: int = Query(default=50, ge=1, le=500)):
     return {"classifications": await latest_classified(limit)}
+
+
+@app.get("/swaps/latest")
+async def swaps_latest(limit: int = Query(default=20, ge=1, le=200)):
+    return {"swaps": await latest_swaps(limit)}
+
+
+@app.post("/admin/trigger-swap")
+async def admin_trigger_swap():
+    """Manual swap trigger for demo recording. Local-use only — do not expose."""
+    if not swap.is_configured():
+        raise HTTPException(503, "swap not configured (KEEPERHUB_API_KEY / KEEPERHUB_WALLET_ADDRESS)")
+    if not swap.is_ready():
+        ok = await swap.setup()
+        if not ok:
+            raise HTTPException(503, "swap setup failed (check approvals path)")
+    # Use the actual current pairwise spread, even if below threshold
+    usdc = prices.get_price("USDC") or 1.0
+    usdt = prices.get_price("USDT") or 1.0
+    spread = abs(usdc - usdt)
+    exec_id = await swap.trigger_swap(spread=spread, reason="manual demo")
+    if not exec_id:
+        raise HTTPException(502, "keeperhub did not return an executionId")
+    return {"executionId": exec_id, "spread": spread}
