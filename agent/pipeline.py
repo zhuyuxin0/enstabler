@@ -10,7 +10,7 @@ import logging
 import time
 from typing import Any
 
-from agent import classifier, compute, db, features, telegram_bot
+from agent import classifier, compute, db, features, storage, telegram_bot
 from agent.publisher import PublishArgs, Publisher
 from agent.stablecoins import ETHEREUM
 
@@ -104,7 +104,7 @@ async def _maybe_publish(
         flow_hash=_flow_hash(flow),
         risk_level=risk,
         classification=cls,
-        storage_root_hash=b"\x00" * 32,  # filled in once 0G Storage upload lands
+        storage_root_hash=storage.latest_root_hash_bytes(),
     )
     try:
         await _publisher.maybe_publish(args)

@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 
-from agent import pipeline, prices, swap, telegram_bot, watcher
+from agent import pipeline, prices, storage, swap, telegram_bot, watcher
 from agent.db import (
     classification_counts,
     flow_count,
@@ -44,6 +44,7 @@ async def lifespan(app: FastAPI):
     _tasks.append(asyncio.create_task(watcher.alchemy_ws_task(), name="alchemy_ws"))
     _tasks.append(asyncio.create_task(watcher.bitquery_task(), name="bitquery"))
     _tasks.append(asyncio.create_task(telegram_bot.telegram_task(), name="telegram"))
+    _tasks.append(asyncio.create_task(storage.storage_task(), name="storage"))
     try:
         yield
     finally:
@@ -76,6 +77,7 @@ async def status():
             "threshold_bps": int(swap.SPREAD_THRESHOLD * 10_000),
             "amount_usd": swap.SWAP_AMOUNT_USD,
         },
+        "storage": storage.latest_status(),
     }
 
 
