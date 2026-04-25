@@ -30,7 +30,12 @@ log = logging.getLogger("enstabler.swap")
 # Trigger policy
 SPREAD_THRESHOLD = 0.005   # 50 bps pairwise USDC/USDT
 COOLDOWN_SECONDS = 300     # 5 min between auto-triggered swaps
-SWAP_AMOUNT_USD = 100.0
+# Default $5 on testnet so we can demo with faucet-sized USDC; mainnet bumps to
+# $100 by convention. Overridable via SWAP_AMOUNT_USD env var.
+_DEFAULT_AMOUNT = (
+    100.0 if os.getenv("KEEPERHUB_NETWORK", "sepolia") == "ethereum" else 5.0
+)
+SWAP_AMOUNT_USD = float(os.getenv("SWAP_AMOUNT_USD", str(_DEFAULT_AMOUNT)))
 SLIPPAGE_TOLERANCE = 0.01  # 1% min-out floor
 
 # Hybrid by design: depeg signal comes from mainnet USDC/USDT prices via
