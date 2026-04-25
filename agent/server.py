@@ -74,6 +74,7 @@ async def status():
         "swap": {
             "configured": swap.is_configured(),
             "ready": swap.is_ready(),
+            "network": swap.KEEPERHUB_NETWORK,
             "threshold_bps": int(swap.SPREAD_THRESHOLD * 10_000),
             "amount_usd": swap.SWAP_AMOUNT_USD,
         },

@@ -33,13 +33,34 @@ COOLDOWN_SECONDS = 300     # 5 min between auto-triggered swaps
 SWAP_AMOUNT_USD = 100.0
 SLIPPAGE_TOLERANCE = 0.01  # 1% min-out floor
 
-# Mainnet addresses
-UNISWAP_V2_ROUTER = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
-USDC_MAINNET = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
-USDT_MAINNET = "0xdAC17F958D2ee523a2206206994597C13D831ec7"
-
+# Hybrid by design: depeg signal comes from mainnet USDC/USDT prices via
+# Coingecko, swap *executes* on a configurable network. Sepolia by default —
+# zero-cost demo; override KEEPERHUB_NETWORK=ethereum for production.
 KEEPERHUB_BASE = "https://app.keeperhub.com"
-KEEPERHUB_NETWORK = "ethereum"
+KEEPERHUB_NETWORK = os.getenv("KEEPERHUB_NETWORK", "sepolia")
+
+# Token + router addresses are env-overridable so we can flip networks without
+# touching code. Defaults are the Sepolia set.
+_DEFAULTS = {
+    "sepolia": {
+        # Circle's official Sepolia USDC (faucet: faucet.circle.com)
+        "USDC": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+        # Aave Sepolia mock USDT (faucet: app.aave.com Sepolia faucet)
+        "USDT": "0xaA8E23Fb1079EA71e0a56F48a2aA51851D8433D0",
+        # Uniswap V2 official Sepolia router
+        "ROUTER": "0xeE567Fe1712Faf6149d80dA1E6934E354124CfE3",
+    },
+    "ethereum": {
+        "USDC": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "USDT": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+        "ROUTER": "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D",
+    },
+}
+_DEFAULT = _DEFAULTS.get(KEEPERHUB_NETWORK, _DEFAULTS["sepolia"])
+
+USDC_ADDR = os.getenv("SWAP_USDC_ADDRESS", _DEFAULT["USDC"])
+USDT_ADDR = os.getenv("SWAP_USDT_ADDRESS", _DEFAULT["USDT"])
+UNISWAP_V2_ROUTER = os.getenv("SWAP_ROUTER_ADDRESS", _DEFAULT["ROUTER"])
 
 ERC20_ABI: list[dict] = [
     {"name": "approve", "type": "function", "stateMutability": "nonpayable",
@@ -135,7 +156,7 @@ async def _read_call(contract: str, func: str, args: list, abi: list) -> Optiona
 
 async def _ensure_approvals(wallet: str) -> bool:
     MAX_UINT256 = (1 << 256) - 1
-    targets = [(USDC_MAINNET, "USDC"), (USDT_MAINNET, "USDT")]
+    targets = [(USDC_ADDR, "USDC"), (USDT_ADDR, "USDT")]
     for token_addr, name in targets:
         allowance_str = await _read_call(
             token_addr, "allowance", [wallet, UNISWAP_V2_ROUTER], ERC20_ABI
@@ -179,8 +200,11 @@ async def setup() -> bool:
         ok = await _ensure_approvals(cfg["wallet"])
         if ok:
             _setup_done = True
-            log.info("swap: ready (wallet=%s, threshold=%dbps, amount=$%.0f)",
-                     cfg["wallet"], int(SPREAD_THRESHOLD * 10_000), SWAP_AMOUNT_USD)
+            log.info(
+                "swap: ready (network=%s, wallet=%s, threshold=%dbps, amount=$%.0f)",
+                KEEPERHUB_NETWORK, cfg["wallet"],
+                int(SPREAD_THRESHOLD * 10_000), SWAP_AMOUNT_USD,
+            )
         return ok
 
 
@@ -190,8 +214,8 @@ def _direction() -> tuple[str, str, str, str]:
     usdc = prices.get_price("USDC") or 1.0
     usdt = prices.get_price("USDT") or 1.0
     if usdc <= usdt:
-        return USDT_MAINNET, "USDT", USDC_MAINNET, "USDC"
-    return USDC_MAINNET, "USDC", USDT_MAINNET, "USDT"
+        return USDT_ADDR, "USDT", USDC_ADDR, "USDC"
+    return USDC_ADDR, "USDC", USDT_ADDR, "USDT"
 
 
 async def trigger_swap(spread: float, reason: str = "auto") -> Optional[str]:
